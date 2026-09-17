@@ -24,7 +24,7 @@
 
 - **Next.js 15**（App Router + Turbopack）· **React 19** · **TypeScript strict**
 - **Tailwind CSS v4** · **Zustand**（客户端状态）
-- **PostgreSQL + Prisma ORM**（测试期 Supabase，含内存兜底）
+- **嵌入式 SQLite + Prisma ORM**（单文件零运维，含内存兜底）
 - **Vitest** 单测（纯逻辑层全覆盖）+ Node 冒烟脚本（HTTP 闭环）
 
 ## 架构
@@ -77,7 +77,7 @@ prisma/                # schema.prisma + 幂等种子脚本
 ### 1. 环境要求
 
 - Node.js ≥ 18（含 WebCrypto）
-- 一个 PostgreSQL（本地或 Supabase）；不配数据库也能跑（内存兜底模式）
+- 无需安装数据库：嵌入式 SQLite 单文件，首次 `db:push` 自动创建；也可以完全不落库（内存兜底模式）
 
 ### 2. 安装与配置
 
@@ -90,8 +90,7 @@ cp .env.example .env   # 按需填写 DATABASE_URL / CRYPTO_RSA_PRIVATE_KEY
 
 | 变量 | 说明 |
 | --- | --- |
-| `DATABASE_URL` | 运行时查询连接串（跑 DB 时必填） |
-| `DIRECT_URL` | Prisma DDL 直连（Supabase 会话池 5432；本地可与上者相同） |
+| `DATABASE_URL` | SQLite 文件路径，如 `file:./data/app.db`（相对 `prisma/` 目录解析） |
 | `CRYPTO_RSA_PRIVATE_KEY` | RSA 私钥（PKCS#8 PEM，`\n` 转义）；本地可省略自动生成，**生产必填** |
 | `USE_MEMORY_DB` | `=1` 强制内存模式，完全不连库（游戏闭环正常，玩家/排行榜不可用） |
 

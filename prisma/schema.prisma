@@ -1,15 +1,13 @@
 // 谜盒 · 数据模型
-// 测试期使用 Supabase（PostgreSQL），DATABASE_URL 见 .env
+// 嵌入式 SQLite 单文件库（零运维，适合单节点部署），DATABASE_URL 见 .env
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  // Supabase：DDL（db push / migrate）走会话池 5432，运行时查询走事务池 6543
-  directUrl = env("DIRECT_URL")
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
 }
 
 /// 诗词语料（chinese-poetry 抽取入库，学段分级）

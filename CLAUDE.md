@@ -6,7 +6,7 @@
 
 - Next.js 15（App Router）+ React 19 + TypeScript（strict）
 - Tailwind CSS v4 · Zustand（客户端状态）
-- PostgreSQL + Prisma ORM
+- 嵌入式 SQLite（单文件库，零运维）+ Prisma ORM
 - 测试：Vitest（核心逻辑层强制单测覆盖）
 
 ## 架构铁律
