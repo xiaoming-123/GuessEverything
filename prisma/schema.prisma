@@ -1,0 +1,141 @@
+// 谜盒 · 数据模型
+// 测试期使用 Supabase（PostgreSQL），DATABASE_URL 见 .env
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // Supabase：DDL（db push / migrate）走会话池 5432，运行时查询走事务池 6543
+  directUrl = env("DIRECT_URL")
+}
+
+/// 诗词语料（chinese-poetry 抽取入库，学段分级）
+model Poem {
+  id      String @id @default(cuid())
+  title   String
+  poet    String
+  dynasty String
+  /// 学段分级 1-12：小学 1-6 / 初中 7-9 / 高中 10-12
+  grade   Int
+  /// 全文诗句，按序排列
+  lines   Json
+  /// 是否为名句（优先用于名句猜诗人/诗名）
+  famous  Boolean @default(false)
+
+  @@index([grade])
+  @@index([poet])
+}
+
+/// 演员语料（纯文字：姓名 / 代表作 / 经典角色，禁止肖像与剧照）
+model Actor {
+  id         String @id @default(cuid())
+  name       String
+  /// 地区：MAINLAND | HK_TW | OVERSEAS
+  region     String
+  /// 难度 1-3：1 入门 / 2 进阶 / 3 骨灰
+  difficulty Int
+  /// 代表作作品名列表
+  works      Json
+  /// 经典角色 [{ role, work }]
+  roles      Json
+
+  @@index([difficulty])
+  @@index([region])
+}
+
+/// 物品语料（名称 / 分类 / 特征线索 / 公版民间谜语谜面）
+model ObjectItem {
+  id         String  @id @default(cuid())
+  name       String
+  /// 分类：ANIMAL | PLANT | FOOD | DAILY | STATIONERY | NATURE
+  category   String
+  /// 难度 1-3：1 入门 / 2 进阶 / 3 骨灰
+  difficulty Int
+  /// 特征线索（由笼统到具体）
+  clues      Json
+  /// 公版民间谜语谜面（可空）
+  riddle     String?
+
+  @@index([difficulty])
+  @@index([category])
+}
+
+/// 匿名玩家（自动分配昵称，可改名）
+model Player {
+  id        String   @id @default(cuid())
+  nickname  String
+  /// emoji 头像
+  avatar    String
+  createdAt DateTime @default(now())
+
+  sessions   GameSession[]
+  progresses PlayerProgress[]
+}
+
+/// 玩家关卡进度（每模式每关卡一条，取历史最优）
+model PlayerProgress {
+  id           String @id @default(cuid())
+  playerId     String
+  mode         String // POETRY | ACTOR | OBJECT
+  stage        String // 学段/难度
+  bestScore    Int    @default(0)
+  /// 最佳正确率（百分比 0-100）
+  bestAccuracy Int    @default(0)
+  /// 星级 0-3（60/80/95% 正确率）
+  stars        Int    @default(0)
+
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@unique([playerId, mode, stage])
+  @@index([mode, stage, stars])
+}
+
+/// 一次对局会话：轮次完整数据（含答案）仅存服务端，永不下发
+model GameSession {
+  id        String   @id @default(cuid())
+  mode      String // POETRY | ACTOR | OBJECT | FEIHUALING
+  /// 学段/难度快照
+  stage     String
+  /// 出题引擎产出的轮次数据（含 answer，服务端专用）
+  rounds    Json
+  /// 轮次总数
+  roundCount Int
+  status    String   @default("ACTIVE") // ACTIVE | FINISHED | EXPIRED
+  score     Int      @default(0)
+  /// 对局有效截止时间（防作弊：过期会话拒绝提交）
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  /// 归属玩家（排行榜/进度归集）；旧会话与未注册玩家为空
+  playerId  String?
+
+  answers AnswerRecord[]
+  player  Player?        @relation(fields: [playerId], references: [id], onDelete: SetNull)
+
+  @@index([status, expiresAt])
+  @@index([playerId])
+  @@index([mode, stage, score])
+}
+
+/// 每轮作答记录（错题本/结算回顾数据来源）
+model AnswerRecord {
+  id         String   @id @default(cuid())
+  sessionId  String
+  roundIndex Int
+  /// 玩家选择/填写的答案
+  given      String
+  /// 服务端判题结果
+  correct    Boolean
+  /// 该题正确答案（结算/错题本展示用）
+  correctAnswer String
+  /// 响应耗时 ms，用于计分
+  timeMs     Int
+  createdAt  DateTime @default(now())
+
+  session GameSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, roundIndex])
+  @@index([sessionId])
+}
