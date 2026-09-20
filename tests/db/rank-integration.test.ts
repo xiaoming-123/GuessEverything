@@ -6,7 +6,7 @@
  * - 重启不遗忘：已见记录持久化（重新构建客户端实例后仍可读、仍可排除）
  * - 重复结算不加分：最后一题判题重放 / 并发双开，功名只加一次
  * - 无资格考试被拒绝：功名未达门槛 / 越级科考 / 错位官阶 → 403
- * - 旧存档保留：kind=STAGE 会话不受官阶模式影响，官阶档案默认布衣
+ * - 容量不足如实上报（409 + 进度保留，不建局）
  *
  * 环境：DATABASE_URL 在导入任何业务模块前（vi.hoisted）指向临时库文件；
  * schema 通过 `prisma db push --skip-generate` 应用到临时库。
@@ -19,7 +19,6 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { PrismaClient } from "@prisma/client";
 import {
-  getRankView,
   judgeRankedAnswer,
   startRankedSession,
 } from "@/lib/db/rank-service";
@@ -394,7 +393,7 @@ describe("诗词升官 · 一次性结算与晋升", () => {
 /* 容量不足与旧存档兼容                                                 */
 /* ------------------------------------------------------------------ */
 
-describe("诗词升官 · 容量不足与旧存档兼容", () => {
+describe("诗词升官 · 容量不足", () => {
   it("容量不足如实上报（409 + 进度保留，不建局）", async () => {
     const pid = await makePlayer();
     // 灌满布衣窗口（g1-3）的全部素材 key，使 fresh < 10
@@ -421,52 +420,5 @@ describe("诗词升官 · 容量不足与旧存档兼容", () => {
     expect(await prisma.gameSession.count({ where: { playerId: pid, kind: "RANKED" } })).toBe(0);
     // 已见持久化未受影响
     expect(await prisma.playerSeenKey.count({ where: { playerId: pid } })).toBe(allKeys.size);
-  });
-
-  it("旧存档保留：STAGE 会话不受官阶模式影响，官阶档案默认布衣", async () => {
-    const pid = await makePlayer();
-    const legacy = await prisma.gameSession.create({
-      data: {
-        id: randomUUID(),
-        mode: "POETRY",
-        stage: "PRIMARY",
-        rounds: [
-          {
-            roundIndex: 0,
-            type: "GUESS_POET",
-            prompt: "床前明月光",
-            options: ["李白", "杜甫", "白居易", "苏轼"],
-            answerIndex: 0,
-            sourceKey: "legacy:0:GUESS_POET",
-            meta: { poemTitle: "静夜思", poet: "李白", dynasty: "唐" },
-          },
-        ],
-        roundCount: 1,
-        status: "ACTIVE",
-        score: 0,
-        expiresAt: new Date(Date.now() + 600_000),
-        playerId: pid,
-      },
-    });
-    // 旧会话默认 kind = STAGE（schema 默认值），rankId / settleKey 为空
-    const got = await prisma.gameSession.findUnique({ where: { id: legacy.id } });
-    expect(got?.kind).toBe("STAGE");
-    expect(got?.rankId).toBeNull();
-    expect(got?.settleKey).toBeNull();
-    // 官阶判题入口拒绝旧会话（404：非 RANKED）
-    await expect(
-      judgeRankedAnswer({
-        gameSessionId: legacy.id,
-        roundIndex: 0,
-        choice: 0,
-        timeMs: 100,
-      }),
-    ).rejects.toMatchObject({ status: 404 });
-    // 官阶档案为布衣默认态（未被旧玩法触碰）
-    const view = await getRankView(pid);
-    expect(view.rankId).toBe(0);
-    expect(view.totalExp).toBe(0);
-    expect(view.ranks).toHaveLength(RANKS.length);
-    expect(view.ranks[10].isEmperor).toBe(true);
   });
 });

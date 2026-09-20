@@ -3,27 +3,19 @@
 /**
  * 匿名玩家状态（Zustand + localStorage）
  *
- * 首次进入自动注册（服务端分配昵称/头像），持久化 playerId；
- * 关卡进度从玩家档案同步，供关卡选择与排行榜“我的排名”使用。
+ * 首次进入自动注册（服务端分配昵称/头像），持久化 playerId。
+ * 本分支只保留诗词升官玩法：功名 / 官阶权威数据来自服务端 RankView / RankSummary，
+ * 本 store 只持有玩家身份（playerId / 昵称 / 头像）。
  */
 
 import { create } from "zustand";
 
 import { secureFetch } from "@/lib/crypto/secure-fetch";
 
-export interface PlayerProgress {
-  mode: string;
-  stage: string;
-  stars: number;
-  bestScore: number;
-  bestAccuracy: number;
-}
-
 interface PlayerProfile {
   id: string;
   nickname: string;
   avatar: string;
-  progresses: PlayerProgress[];
 }
 
 const STORAGE_KEY = "mihe.player.v1";
@@ -32,10 +24,9 @@ interface PlayerStore {
   playerId: string | null;
   nickname: string;
   avatar: string;
-  progresses: PlayerProgress[];
   /** 首次访问自动注册；幂等可重复调用 */
   ensurePlayer: () => Promise<void>;
-  /** 拉取最新档案（进度/昵称） */
+  /** 拉取最新档案（昵称） */
   refreshProfile: () => Promise<void>;
   /** 改昵称（2-12 字符） */
   rename: (nickname: string) => Promise<void>;
@@ -71,7 +62,6 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
   playerId: null,
   nickname: "",
   avatar: "👤",
-  progresses: [],
 
   ensurePlayer: async () => {
     const { playerId } = get();
@@ -86,7 +76,6 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
         playerId: profile.id,
         nickname: profile.nickname,
         avatar: profile.avatar,
-        progresses: profile.progresses,
       });
     } catch {
       // DB 不可用（本地内存模式）/ 网络失败：匿名玩家档案是增强能力，
@@ -102,7 +91,6 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
       set({
         nickname: profile.nickname,
         avatar: profile.avatar,
-        progresses: profile.progresses,
       });
     } catch {
       /* 档案刷新失败不打断对局 */
