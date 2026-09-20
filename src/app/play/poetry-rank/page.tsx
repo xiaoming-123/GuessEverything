@@ -25,10 +25,11 @@ import type {
 import { useRankGameStore } from "@/store/rank-store";
 import { localPlayerId, usePlayerStore } from "@/store/player-store";
 import { RankRoad } from "@/components/rank/rank-road";
+import { RankIdentityCard } from "@/components/rank/rank-identity-card";
 import { RankSettleView } from "@/components/rank/rank-settle-view";
+import { PersonaBubble } from "@/components/rank/persona-bubble";
 import { QuizHUD } from "@/components/quiz/quiz-hud";
 import { ChoiceList } from "@/components/quiz/choice-list";
-import { JudgeCard } from "@/components/quiz/judge-card";
 import { useAutoNext } from "@/components/quiz/use-auto-next";
 
 const KIND_LABEL: Record<RankKind, string> = {
@@ -196,7 +197,13 @@ export default function PoetryRankPage() {
             </div>
           ) : (
             <>
-              <RankRoad rank={rank} />
+              {/* 身份卡（D1：立绘 + 称号 + 功名估算 + 最近战绩） */}
+              <RankIdentityCard rank={rank} />
+
+              {/* 路线图迷雾（D1 重写） */}
+              <div className="mt-4">
+                <RankRoad rank={rank} />
+              </div>
 
               <div className="mt-6 grid gap-3">
                 <button
@@ -290,44 +297,49 @@ export default function PoetryRankPage() {
                   : round.type === "GUESS_TITLE"
                     ? "这句诗出自哪首作品？"
                     : "请补出下一句";
+              // 首题展示开局白；后续题用简短过场句（人设对话气泡化，详设 §1.3）
+              const bubbleText =
+                s.currentIndex === 0 && s.opening
+                  ? s.opening
+                  : "下一题。";
               return (
-                <>
-                  <p className="mb-2 text-sm text-zinc-500">
-                    {KIND_LABEL[s.kind]} · 第 {s.currentIndex + 1} 题 · {typeLabel}
-                  </p>
-                  <div className="mb-6 rounded-2xl border border-zinc-200 bg-white p-6 text-center">
-                    <p className="text-xl font-semibold leading-relaxed">
-                      {round.prompt}
-                    </p>
-                  </div>
-                </>
+                <PersonaBubble
+                  persona={s.persona ?? "TUTOR"}
+                  variant="question"
+                  text={bubbleText}
+                  typeLabel={`${KIND_LABEL[s.kind]} · 第 ${s.currentIndex + 1} 题 · ${typeLabel}`}
+                  prompt={round.prompt}
+                  combo={s.combo}
+                />
               );
             })()}
 
-            <ChoiceList
-              options={s.rounds[s.currentIndex].options}
-              selected={s.selectedOption}
-              correctAnswer={s.lastJudge?.correctAnswer ?? null}
-              reveal={s.phase === "REVEAL"}
-              locked={s.submitting}
-              theme="indigo"
-              onChoose={(i) => void answer(i)}
-            />
-          </div>
+            <div className="mt-4">
+              <ChoiceList
+                options={s.rounds[s.currentIndex].options}
+                selected={s.selectedOption}
+                correctAnswer={s.lastJudge?.correctAnswer ?? null}
+                reveal={s.phase === "REVEAL"}
+                locked={s.submitting}
+                theme="indigo"
+                onChoose={(i) => void answer(i)}
+              />
+            </div>
 
-          {s.phase === "REVEAL" && s.lastJudge && (
-            <JudgeCard
-              correct={s.lastJudge.correct}
-              timeout={s.lastJudge.timeout}
-              correctAnswer={s.lastJudge.correctAnswer}
-              explanation={s.lastJudge.explanation}
-              gained={s.lastJudge.gained}
-              multiplier={s.lastJudge.multiplier}
-              isLast={s.currentIndex + 1 >= s.rounds.length}
-              theme="indigo"
-              onNext={s.next}
-            />
-          )}
+            {s.phase === "REVEAL" && s.lastJudge && s.persona && (
+              <div className="animate-reveal-in mt-4">
+                <PersonaBubble
+                  persona={s.persona}
+                  variant="feedback"
+                  text={s.lastJudge.feedback}
+                  correctAnswer={s.lastJudge.correctAnswer}
+                  gained={s.lastJudge.gained}
+                  isLast={s.currentIndex + 1 >= s.rounds.length}
+                  onNext={s.next}
+                />
+              </div>
+            )}
+          </div>
         </section>
       )}
 

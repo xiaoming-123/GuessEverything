@@ -127,3 +127,57 @@ body {
 .animate-timer-urgent {
   animation: timer-urgent 0.6s ease-in-out infinite;
 }
+
+/* ---------------- 诗词升官 · D1 动效 ---------------- */
+
+/* 路线图当前节点脉冲 */
+@keyframes rank-node-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 7px rgba(99, 102, 241, 0);
+  }
+}
+.animate-rank-node-pulse {
+  animation: rank-node-pulse 1.8s ease-out infinite;
+}
+
+/* 结算擢升立绘入场：300ms 缩放（详设 §1.5） */
+@keyframes settle-promote-in {
+  from {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.animate-settle-promote {
+  animation: settle-promote-in 0.3s ease-out both;
+}
+
+/* 结算卡片入场 */
+@keyframes settle-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-settle-card {
+  animation: settle-card-in 0.34s ease-out both;
+}
+
+/* 迷雾遮罩（下一阶半剪影 / 迷雾黑剪影，详设 §1.4） */
+.fog-half {
+  filter: brightness(0.4);
+}
+.fog-full {
+  filter: brightness(0.25) saturate(0.4);
+}

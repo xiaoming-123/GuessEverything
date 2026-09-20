@@ -10,6 +10,7 @@
 
 import { create } from "zustand";
 import type { PoetryRoundView, RankKind } from "@/lib/games/poetry/types";
+import type { PersonaKey } from "@/lib/games/poetry/persona";
 import type {
   RankedJudgeView,
   RankedResumeView,
@@ -31,6 +32,8 @@ interface LastJudge {
   timeout?: boolean;
   correctAnswer: string;
   explanation: string;
+  /** 人设反馈句（D1：服务端拼装） */
+  feedback: string;
   gained: number;
   multiplier: number;
 }
@@ -54,6 +57,10 @@ interface RankGameStore {
   roundStartedAt: number;
   /** 最后一题结算摘要（功名 / 晋升） */
   lastSummary: RankSummary | null;
+  /** 本局人设（D1：start/resume 下发，气泡署名） */
+  persona: PersonaKey | null;
+  /** 开局白（D1：服务端按会话 id 哈希生成，同会话同句） */
+  opening: string;
 
   reset: () => void;
   setError: (message: string) => void;
@@ -81,6 +88,8 @@ const initial = {
   submitting: false,
   roundStartedAt: 0,
   lastSummary: null,
+  persona: null as PersonaKey | null,
+  opening: "",
 };
 
 export const useRankGameStore = create<RankGameStore>((set, get) => ({
@@ -89,7 +98,7 @@ export const useRankGameStore = create<RankGameStore>((set, get) => ({
   reset: () => set({ ...initial }),
   setError: (error) => set({ error, phase: "ERROR", submitting: false }),
 
-  startGame: ({ gameSessionId, expiresAt, kind, rankId, rank, rounds }) =>
+  startGame: ({ gameSessionId, expiresAt, kind, rankId, rank, rounds, persona, opening }) =>
     set({
       ...initial,
       phase: "PLAYING",
@@ -101,6 +110,8 @@ export const useRankGameStore = create<RankGameStore>((set, get) => ({
       rounds,
       currentIndex: 0,
       roundStartedAt: Date.now(),
+      persona,
+      opening,
     }),
 
   resume: (view, rank) => {
@@ -119,6 +130,8 @@ export const useRankGameStore = create<RankGameStore>((set, get) => ({
       score: view.score,
       currentIndex: index,
       roundStartedAt: Date.now(),
+      persona: view.persona,
+      opening: view.opening,
     });
   },
 
@@ -135,6 +148,7 @@ export const useRankGameStore = create<RankGameStore>((set, get) => ({
         timeout: judge.timeout,
         correctAnswer: judge.correctAnswer,
         explanation: judge.explanation,
+        feedback: judge.feedback,
         gained: judge.gained,
         multiplier: judge.multiplier,
       },

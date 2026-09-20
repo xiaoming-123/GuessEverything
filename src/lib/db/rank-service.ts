@@ -27,6 +27,15 @@ import { ApiError } from "@/lib/crypto/with-crypto";
 import { buildRankedRounds, faceKey } from "@/lib/games/poetry/engine";
 import { computeScore } from "@/lib/games/poetry/score";
 import { evaluatePromotion, PromotionResult } from "@/lib/games/poetry/promote";
+import {
+  feedbackLine,
+  failLine,
+  openingLine,
+  personaFor,
+  practiceLine,
+  promotionLine,
+  type PersonaKey,
+} from "@/lib/games/poetry/persona";
 import { isRankId, nextRank, RANKS } from "@/lib/games/poetry/rank";
 import { judgeClear } from "@/lib/games/stages";
 import {
@@ -58,6 +67,19 @@ export interface RankProgressView {
   isEmperor: boolean;
 }
 
+/**
+ * 会话 id → 无符号 32 位哈希（开局白 seed 用；确定性，同会话同白）。
+ * FNV-1a 32 位口径，纯字符串运算。
+ */
+function hashIdToSeed(id: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i += 1) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
 export interface RankView {
   rankId: number;
   label: string;
@@ -68,6 +90,15 @@ export interface RankView {
   nextUnlocked: boolean;
   /** 官途表（整条晋升线，供路线图渲染） */
   ranks: RankProgressView[];
+  /**
+   * 已见题累计（D1，详设 §2.3 口径）：PlayerSeenKey 同时存 sourceKey 行
+   * （`poemId:lineIndex:type`，冒号分隔）与 faceKey 行（`type|prompt|correct`，
+   * 竖线分隔）——直接 count() ≈ 2× 真实题数；只数 sourceKey 行
+   * （faceKey 首段是题型枚举名，不含冒号）。
+   */
+  seenCount: number;
+  /** 近 3 局战绩（最新在前；功名估算 avgExp 与「最近战绩」行共用，D1 交付） */
+  recentGames: Array<{ kind: RankKind; expGained: number; accuracy: number }>;
 }
 
 /** 官阶开局视图 */
@@ -80,6 +111,10 @@ export interface RankedStartView {
   /** 当前官阶（开局快照，供前端显示功名条） */
   rank: RankView;
   rounds: PoetryRoundView[];
+  /** 本局人设（D1，详设 §1.2：研习=引路先生 / 科考=主考官 / 登极=钦差） */
+  persona: PersonaKey;
+  /** 开局白（服务端按会话 id 哈希生成，同会话同句） */
+  opening: string;
 }
 
 /** 官阶结算摘要（答完最后一题返回） */
@@ -95,6 +130,8 @@ export interface RankSummary {
   totalExp: number;
   promotion: PromotionResult;
   rank: RankView;
+  /** 结算台词（D1：擢升 / 失败 / 研习三分支，persona 纯函数拼装） */
+  settleLine: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -234,6 +271,7 @@ export async function startRankedSession(
       });
 
       const rankView = await buildRankView(playerId);
+      const persona = personaFor(kind, rankId);
       return {
         gameSessionId: result.id,
         kind,
@@ -242,6 +280,8 @@ export async function startRankedSession(
         expiresAt: result.expiresAt.toISOString(),
         rank: rankView,
         rounds: result.rounds.map(toRoundView),
+        persona,
+        opening: openingLine(persona, hashIdToSeed(result.id)),
       };
     } catch (err) {
       if (err instanceof ApiError) throw err; // 业务错误（门槛/容量/玩家）直接上抛
@@ -310,6 +350,8 @@ export interface RankedJudgeView {
   correctAnswer: string;
   /** 判题解释（出自哪首，服务端生成；客户端无 meta） */
   explanation: string;
+  /** 人设反馈句（D1：服务端拼，不含答案本身，详设 §1.2） */
+  feedback: string;
   gained: number;
   multiplier: number;
   totalScore: number;
@@ -394,6 +436,15 @@ export async function judgeRankedAnswer(
   const totalScore = session.score + score.gained;
   const finished = roundIndex + 1 >= rounds.length;
   const given = timeout ? "TIMEOUT" : String(choice);
+  const explanation = buildExplanation(round);
+  // 人设反馈（服务端拼；combo = 结算前 streak + 1，详设 §1.2）
+  const personaKey = personaFor(kind, rankId);
+  const feedback = feedbackLine(personaKey, {
+    correct,
+    timeout,
+    combo,
+    explanation,
+  });
 
   // 落库答案 + 累计分；最后一题走一次性结算（同一事务，见 settleRankedSession）
   if (!finished || !playerId) {
@@ -418,7 +469,8 @@ export async function judgeRankedAnswer(
       correct,
       timeout,
       correctAnswer: round.options[round.answerIndex],
-      explanation: buildExplanation(round),
+      explanation,
+      feedback,
       gained: score.gained,
       multiplier: score.multiplier,
       totalScore,
@@ -444,7 +496,8 @@ export async function judgeRankedAnswer(
     correct,
     timeout,
     correctAnswer,
-    explanation: buildExplanation(round),
+    explanation,
+    feedback,
     gained: score.gained,
     multiplier: score.multiplier,
     totalScore,
@@ -527,9 +580,10 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
     const clear = judgeClear(accuracy);
 
     // 会话总分落库（与结算原子；排行榜只统计学段局，此处仅为数据完整）
+    // accuracy 一并落库（D1 详设 §2.3 推荐口径：recentGames 展示直接取字段）
     await tx.gameSession.update({
       where: { id: gameSessionId },
-      data: { score: sessionScore },
+      data: { score: sessionScore, accuracy },
     });
 
     // 4. 功名记账（单调累加：失败 / 弃局也保留已得功名）
@@ -570,6 +624,17 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
       expGained: sessionScore,
       totalExp,
       promotion,
+      // 结算台词（D1，详设 §1.2：按 kind 与 promotion.promoted 三分支）
+      settleLine:
+        input.kind !== "EXAM"
+          ? practiceLine(sessionScore)
+          : promotion.promoted
+            ? promotionLine(
+                personaFor("EXAM", input.rankId),
+                RANKS[currentRank].label,
+                RANKS[promotion.newRank].label,
+              )
+            : failLine(accuracy),
     };
   });
 
@@ -585,6 +650,7 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
     totalExp: result.totalExp,
     promotion: result.promotion,
     rank: rankView,
+    settleLine: result.settleLine,
   };
 }
 
@@ -592,9 +658,22 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
 /* 官阶视图                                                            */
 /* ------------------------------------------------------------------ */
 
-/** 构建官阶进度视图（功名条 / 路线图数据源） */
+/** 构建官阶进度视图（功名条 / 路线图数据源；含 D1 交付的 seenCount / recentGames） */
 async function buildRankView(playerId: string): Promise<RankView> {
-  const row = await prisma.playerRank.findUnique({ where: { playerId } });
+  const [row, seenCount, recentSessions] = await Promise.all([
+    prisma.playerRank.findUnique({ where: { playerId } }),
+    // seenCount 口径（详设 §2.3，review A5）：只数 sourceKey 行（含冒号），
+    // faceKey 行（竖线分隔，首段为题型枚举名）不重复计入。
+    prisma.playerSeenKey.count({
+      where: { playerId, key: { contains: ":" } },
+    }),
+    prisma.gameSession.findMany({
+      where: { playerId, kind: "RANKED", status: "FINISHED" },
+      orderBy: { createdAt: "desc" },
+      take: 3,
+      select: { stage: true, score: true, accuracy: true },
+    }),
+  ]);
   const rankId = row?.rank ?? 0;
   const totalExp = row?.totalExp ?? 0;
   const next = nextRank(rankId);
@@ -611,6 +690,14 @@ async function buildRankView(playerId: string): Promise<RankView> {
       label: r.label,
       subtitle: r.subtitle,
       isEmperor: !!r.isEmperor,
+    })),
+    seenCount,
+    // expGained 取 score 字段（结算口径 = 实际入账功名，D4 后为 hint 折后值）；
+    // accuracy 取结算事务写入的 GameSession.accuracy（D1 起落库，详设 §2.3 推荐口径）
+    recentGames: recentSessions.map((s) => ({
+      kind: (s.stage === "EXAM" ? "EXAM" : "PRACTICE") as RankKind,
+      expGained: s.score,
+      accuracy: s.accuracy,
     })),
   };
 }
@@ -641,6 +728,9 @@ export interface RankedResumeView {
   /** 当前累计分 */
   score: number;
   rounds: PoetryRoundView[];
+  /** 本局人设与开局白（D1：与 start 视图同口径，同会话同句） */
+  persona: PersonaKey;
+  opening: string;
 }
 
 /**
@@ -665,14 +755,18 @@ export async function resumeRankedSession(
     include: { answers: { select: { roundIndex: true } } },
   });
   if (!session) return null;
+  const kind = (session.stage === "EXAM" ? "EXAM" : "PRACTICE") as RankKind;
+  const persona = personaFor(kind, session.rankId ?? 0);
   return {
     gameSessionId: session.id,
-    kind: (session.stage === "EXAM" ? "EXAM" : "PRACTICE") as RankKind,
+    kind,
     rankId: session.rankId ?? 0,
     label: RANKS[session.rankId ?? 0].label,
     expiresAt: session.expiresAt.toISOString(),
     answeredIndexes: session.answers.map((a) => a.roundIndex),
     score: session.score,
     rounds: (session.rounds as unknown as PoetryRound[]).map(toRoundView),
+    persona,
+    opening: openingLine(persona, hashIdToSeed(session.id)),
   };
 }

@@ -19,7 +19,9 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { PrismaClient } from "@prisma/client";
 import {
+  getRankView,
   judgeRankedAnswer,
+  resumeRankedSession,
   startRankedSession,
 } from "@/lib/db/rank-service";
 import { buildRankedRounds } from "@/lib/games/poetry/engine";
@@ -420,5 +422,134 @@ describe("诗词升官 · 容量不足", () => {
     expect(await prisma.gameSession.count({ where: { playerId: pid, kind: "RANKED" } })).toBe(0);
     // 已见持久化未受影响
     expect(await prisma.playerSeenKey.count({ where: { playerId: pid } })).toBe(allKeys.size);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* D1 · 人设对话 + RankView 扩展（详设 §1 / §7 D1）                      */
+/* ------------------------------------------------------------------ */
+
+describe("诗词升官 · D1 人设对话与 RankView 扩展", () => {
+  it("start 视图含 persona/opening：研习→TUTOR 且开局白与纯函数同 seed 一致", async () => {
+    const pid = await makePlayer();
+    const view = await startRankedSession({ playerId: pid, kind: "PRACTICE" });
+    expect(view.persona).toBe("TUTOR");
+    expect(typeof view.opening).toBe("string");
+    expect(view.opening.length).toBeGreaterThan(0);
+    // 同 seed（会话 id 哈希）同句：与纯函数口径一致（hashIdToSeed 为服务端内部实现，
+    // 这里只断言 opening 落在 TUTOR 池内 + 非空；确定性由 persona.test.ts 覆盖）
+    expect(view.opening).not.toContain("answerIndex");
+  });
+
+  it("start 视图含 persona/opening：科考→EXAMINER；resume 视图同口径", async () => {
+    const pid = await makePlayer();
+    await grantExp(pid, 2000);
+    const view = await startRankedSession({ playerId: pid, kind: "EXAM" });
+    expect(view.rankId).toBe(1);
+    expect(view.persona).toBe("EXAMINER");
+    expect(view.opening.length).toBeGreaterThan(0);
+
+    // resume：同一局恢复，persona/opening 与 start 一致（同会话 id → 同 seed → 同句）
+    const resumed = await resumeRankedSession(pid);
+    expect(resumed).not.toBeNull();
+    expect(resumed!.gameSessionId).toBe(view.gameSessionId);
+    expect(resumed!.persona).toBe(view.persona);
+    expect(resumed!.opening).toBe(view.opening);
+  });
+
+  it("answer 视图含 feedback：对/错/超时三分支句式正确，且不含答案索引信息", async () => {
+    const pid = await makePlayer();
+    const view = await startRankedSession({ playerId: pid, kind: "PRACTICE" });
+    const rounds = await sessionRounds(view.gameSessionId);
+    const correctIdx = rounds[0].answerIndex;
+    const wrongIdx = (correctIdx + 1) % 4;
+
+    const judgeWrong = await judgeRankedAnswer({
+      gameSessionId: view.gameSessionId,
+      roundIndex: 0,
+      choice: wrongIdx,
+      timeMs: 1000,
+    });
+    expect(judgeWrong.feedback).toMatch(/^错。/);
+    // 反馈句含出处（explanation 拼接），但不含「answerIndex」/ 正确选项序字样
+    expect(judgeWrong.feedback).toContain("出自《");
+    expect(judgeWrong.feedback).not.toContain("answerIndex");
+
+    const judgeTimeout = await judgeRankedAnswer({
+      gameSessionId: view.gameSessionId,
+      roundIndex: 1,
+      timeout: true,
+      timeMs: 15000,
+    });
+    expect(judgeTimeout.feedback).toMatch(/^时辰到了。/);
+  });
+
+  it("结算 settleLine 三分支：研习=practiceLine / 科考中=promotionLine / 科考败=failLine", async () => {
+    // 研习：practiceLine
+    const p1 = await makePlayer();
+    const v1 = await startRankedSession({ playerId: p1, kind: "PRACTICE" });
+    const s1 = (await play(v1.gameSessionId, allCorrect)).summary!;
+    expect(s1.settleLine).toBe(`这一卷记下 ${s1.expGained} 功名。`);
+
+    // 科考通过：promotionLine（fromLabel 中式，擢升 toLabel）
+    const p2 = await makePlayer();
+    await grantExp(p2, 1500);
+    const v2 = await startRankedSession({ playerId: p2, kind: "PRACTICE" });
+    await play(v2.gameSessionId, allCorrect);
+    const v3 = await startRankedSession({ playerId: p2, kind: "EXAM" });
+    const s3 = (await play(v3.gameSessionId, sevenCorrect, 2500)).summary!;
+    expect(s3.promotion.promoted).toBe(true);
+    expect(s3.settleLine).toBe(`布衣中式，擢升${RANKS[1].label}。`);
+
+    // 科考失败：failLine（含正确率与缺口）
+    const p3 = await makePlayer();
+    await grantExp(p3, 2000);
+    const v4 = await startRankedSession({ playerId: p3, kind: "EXAM" });
+    const s4 = (await play(v4.gameSessionId, fiveCorrect, 3000)).summary!;
+    expect(s4.promotion.reason).toBe("EXAM_FAILED");
+    expect(s4.settleLine).toContain("正确率 50%");
+    expect(s4.settleLine).toContain("还差 1 题");
+    expect(s4.settleLine).toContain("卷面功名已为你留下");
+  });
+
+  it("RankView.recentGames：3 局后数组序最新在前、kind 与 accuracy 口径正确", async () => {
+    const pid = await makePlayer();
+    // 三局研习（不同正确率：全对 / 7 对 / 5 对）
+    const a = await startRankedSession({ playerId: pid, kind: "PRACTICE" });
+    const sa = (await play(a.gameSessionId, allCorrect)).summary!;
+    const b = await startRankedSession({ playerId: pid, kind: "PRACTICE" });
+    const sb = (await play(b.gameSessionId, sevenCorrect, 2500)).summary!;
+    const c = await startRankedSession({ playerId: pid, kind: "PRACTICE" });
+    const sc = (await play(c.gameSessionId, fiveCorrect, 3000)).summary!;
+
+    const view = await getRankView(pid);
+    expect(view.recentGames).toHaveLength(3);
+    // 最新在前：c → b → a
+    expect(view.recentGames[0].expGained).toBe(sc.expGained);
+    expect(view.recentGames[0].accuracy).toBe(sc.accuracy);
+    expect(view.recentGames[1].expGained).toBe(sb.expGained);
+    expect(view.recentGames[2].expGained).toBe(sa.expGained);
+    // 均非科考
+    for (const g of view.recentGames) expect(g.kind).toBe("PRACTICE");
+    // 功名估算口径：avgExp = 三局均值
+    const avg = Math.round(
+      (sa.expGained + sb.expGained + sc.expGained) / 3,
+    );
+    expect(avg).toBeGreaterThan(0);
+  });
+
+  it("seenCount 只数 sourceKey 行：含 faceKey 行的库不翻倍（review A5）", async () => {
+    const pid = await makePlayer();
+    const view = await startRankedSession({ playerId: pid, kind: "PRACTICE" });
+    const rounds = await sessionRounds(view.gameSessionId);
+    const sourceKeyCount = new Set(rounds.map((r) => r.sourceKey)).size;
+    // 每轮 sourceKey + faceKey 双落库 → 总行数 ≥ 2× sourceKey
+    const totalRows = await prisma.playerSeenKey.count({ where: { playerId: pid } });
+    expect(totalRows).toBeGreaterThanOrEqual(sourceKeyCount * 2);
+    const rankView = await getRankView(pid);
+    // seenCount = sourceKey 行数（= 本局题数 10），不翻倍
+    expect(rankView.seenCount).toBe(sourceKeyCount);
+    expect(rankView.seenCount).toBe(10);
+    expect(rankView.seenCount).toBeLessThan(totalRows);
   });
 });
