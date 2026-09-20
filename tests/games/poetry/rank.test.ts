@@ -96,8 +96,11 @@ describe("题数与窗口", () => {
     expect(countFor(0, "PRACTICE")).toBe(10);
     expect(countFor(0, "EXAM")).toBe(10);
     expect(countFor(0, "DAILY")).toBe(1);
-    expect(countFor(10, "PRACTICE")).toBe(15); // 皇帝 Boss 不论 kind
+    expect(countFor(10, "PRACTICE")).toBe(15); // 皇帝 Boss 研习 15 题
     expect(countFor(10, "EXAM")).toBe(15);
+    // review A6：皇帝阶每日题恒 1 题（不烧 g12 池、不挤占登极大考）
+    expect(countFor(10, "DAILY")).toBe(1);
+    expect(countFor(7, "DAILY")).toBe(1);
   });
 
   it("窗口：科考用 examWindow，研习/每日用本官阶主窗口", () => {

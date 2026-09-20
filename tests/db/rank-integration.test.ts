@@ -19,11 +19,13 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { PrismaClient } from "@prisma/client";
 import {
+  getLedgerView,
   getRankView,
   judgeRankedAnswer,
   resumeRankedSession,
   startRankedSession,
 } from "@/lib/db/rank-service";
+import { makeUpDaily } from "@/lib/db/daily-service";
 import { buildRankedRounds } from "@/lib/games/poetry/engine";
 import { RANKS } from "@/lib/games/poetry/rank";
 import {
@@ -551,5 +553,153 @@ describe("诗词升官 · D1 人设对话与 RankView 扩展", () => {
     expect(rankView.seenCount).toBe(sourceKeyCount);
     expect(rankView.seenCount).toBe(10);
     expect(rankView.seenCount).toBeLessThan(totalRows);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* D2 · 每日题 + 成就 + 功名簿（详设 §2 / §7 D2）                        */
+/* ------------------------------------------------------------------ */
+
+describe("诗词升官 · D2 每日题 / 成就 / 功名簿", () => {
+  /** 服务端本地日（与 rank-service localDate 同口径：Asia/Shanghai） */
+  function localDate(): string {
+    return new Intl.DateTimeFormat("sv-SE", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  }
+  /** 上一自然月前缀 YYYY-MM */
+  function prevMonthPrefix(): string {
+    const today = localDate();
+    const [y, m] = today.split("-").map(Number);
+    const d = new Date(Date.UTC(y, m - 2, 1));
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+  }
+  /** sourceKey → 语料 grade（窗口断言用） */
+  const gradeByPoem = new Map(corpus.map((p) => [p.id, p.grade]));
+
+  it("DAILY 三视图 kind 均为 DAILY、roundCount=1，出题窗口=当前官阶 gradeWindow", async () => {
+    const pid = await makePlayer();
+    const started = await startRankedSession({ playerId: pid, kind: "DAILY" });
+    expect(started.kind).toBe("DAILY");
+    expect(started.rankId).toBe(0); // 布衣（当前官阶，非 +1）
+    expect(started.rounds).toHaveLength(1);
+
+    const rounds = await sessionRounds(started.gameSessionId);
+    const poemId = rounds[0].sourceKey.split(":")[0];
+    const grade = gradeByPoem.get(poemId)!;
+    // 布衣 gradeWindow = [1,3]（研习窗口，非科考窗口 [1,4]）
+    expect(grade).toBeGreaterThanOrEqual(1);
+    expect(grade).toBeLessThanOrEqual(3);
+
+    // 作答 → 结算 summary.kind = DAILY
+    const last = await play(started.gameSessionId, allCorrect);
+    expect(last.summary!.kind).toBe("DAILY");
+    // resume 视图（若未结算时）kind 口径；此处已结算，直接断言 stage 落库 = DAILY
+    const sess = await prisma.gameSession.findUnique({ where: { id: started.gameSessionId } });
+    expect(sess!.stage).toBe("DAILY");
+  });
+
+  it("DAILY 幂等：当日已结算再开 → 409，不建第二局", async () => {
+    const pid = await makePlayer();
+    const a = await startRankedSession({ playerId: pid, kind: "DAILY" });
+    await play(a.gameSessionId, allCorrect);
+    // 当日再开 → 409
+    await expect(startRankedSession({ playerId: pid, kind: "DAILY" })).rejects.toMatchObject({
+      status: 409,
+    });
+    // 当日 DAILY 会话只有一局
+    expect(
+      await prisma.gameSession.count({ where: { playerId: pid, stage: "DAILY" } }),
+    ).toBe(1);
+  });
+
+  it("DAILY 不触发 FIRST_PRACTICE（kind 口径）但计功名", async () => {
+    const pid = await makePlayer();
+    const v = await startRankedSession({ playerId: pid, kind: "DAILY" });
+    const s = (await play(v.gameSessionId, allCorrect)).summary!;
+    expect(s.kind).toBe("DAILY");
+    expect(s.expGained).toBeGreaterThan(0);
+    // DAILY 局不计 FIRST_PRACTICE（纯函数口径：kind !== PRACTICE）
+    expect(s.newBadges).not.toContain("FIRST_PRACTICE");
+  });
+
+  it("结算 newBadges：首局研习全对 3 连击 → 含 FIRST_PRACTICE / ALL_CORRECT / COMBO_3", async () => {
+    const pid = await makePlayer();
+    const v = await startRankedSession({ playerId: pid, kind: "PRACTICE" });
+    const s = (await play(v.gameSessionId, allCorrect)).summary!;
+    expect(s.newBadges).toContain("FIRST_PRACTICE");
+    expect(s.newBadges).toContain("ALL_CORRECT");
+    expect(s.newBadges).toContain("COMBO_3");
+    // 落库：PlayerAchievement 持有集与下发一致
+    const earned = await prisma.playerAchievement.findMany({
+      where: { playerId: pid },
+      select: { key: true },
+    });
+    expect(earned.map((e) => e.key).sort()).toEqual(s.newBadges.slice().sort());
+  });
+
+  it("成就幂等：二次结算同条件不再重复下发同一 key", async () => {
+    const pid = await makePlayer();
+    const v1 = await startRankedSession({ playerId: pid, kind: "PRACTICE" });
+    const s1 = (await play(v1.gameSessionId, allCorrect)).summary!;
+    expect(s1.newBadges).toContain("FIRST_PRACTICE");
+    // 第二局（FIRST_PRACTICE 已持有）→ 不再下发
+    const v2 = await startRankedSession({ playerId: pid, kind: "PRACTICE" });
+    const s2 = (await play(v2.gameSessionId, allCorrect)).summary!;
+    expect(s2.newBadges).not.toContain("FIRST_PRACTICE");
+    // 落库去重（unique playerId+key）
+    const cnt = await prisma.playerAchievement.count({
+      where: { playerId: pid, key: "FIRST_PRACTICE" },
+    });
+    expect(cnt).toBe(1);
+  });
+
+  it("getLedgerView：三区块数据（badges / daily / recentBars）齐全且口径正确", async () => {
+    const pid = await makePlayer();
+    const a = await startRankedSession({ playerId: pid, kind: "PRACTICE" });
+    await play(a.gameSessionId, allCorrect);
+    const ledger = await getLedgerView(pid);
+    // 功名总览
+    expect(ledger.totalExp).toBeGreaterThan(0);
+    expect(ledger.seenCount).toBe(10);
+    // 近 1 局柱状图（最新在后，kind=PRACTICE）
+    expect(ledger.recentBars).toHaveLength(1);
+    expect(ledger.recentBars[0].kind).toBe("PRACTICE");
+    expect(ledger.recentBars[0].exp).toBeGreaterThan(0);
+    // 月历：cells 非空、含今日 pending 格
+    expect(ledger.daily.cells.length).toBeGreaterThan(0);
+    const today = localDate();
+    const todayCell = ledger.daily.cells.find((c) => c && c.date === today);
+    expect(todayCell).toBeDefined();
+    // 成就：首局后已获 FIRST_PRACTICE 等
+    expect(ledger.badges).toContain("FIRST_PRACTICE");
+  });
+
+  it("补签 makeUpDaily：上月缺答日可补签，本月配额用尽后 403", async () => {
+    const pid = await makePlayer();
+    const prevPrefix = prevMonthPrefix();
+    const date1 = `${prevPrefix}-15`;
+    const date2 = `${prevPrefix}-16`;
+    // 首次补签成功（纯展示，不加功名）
+    const before = await prisma.playerRank.findUnique({ where: { playerId: pid } });
+    const r1 = await makeUpDaily(pid, date1);
+    expect(r1.made).toBe(true);
+    const rec1 = await prisma.playerDaily.findUnique({
+      where: { playerId_date: { playerId: pid, date: date1 } },
+    });
+    expect(rec1!.settled).toBe(true);
+    expect(rec1!.madeUp).toBe(true);
+    // 功名不变（补签不加功名）
+    const after = await prisma.playerRank.findUnique({ where: { playerId: pid } });
+    expect(after?.totalExp ?? 0).toBe(before?.totalExp ?? 0);
+    // 同月第二次补签 → 配额用尽 403
+    await expect(makeUpDaily(pid, date2)).rejects.toMatchObject({ status: 403 });
+    // 本月之外 → 400
+    await expect(makeUpDaily(pid, `${localDate().slice(0, 7)}-15`)).rejects.toMatchObject({
+      status: 400,
+    });
   });
 });

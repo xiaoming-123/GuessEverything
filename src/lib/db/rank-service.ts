@@ -39,6 +39,18 @@ import {
 import { isRankId, nextRank, RANKS } from "@/lib/games/poetry/rank";
 import { judgeClear } from "@/lib/games/stages";
 import {
+  evaluateAchievements,
+  type AchievementCtx,
+} from "@/lib/games/poetry/achievements";
+import {
+  buildMonthCells,
+  completedWeeks,
+  completedWeeksThisMonth,
+  MONTHLY_MAKEUP_QUOTA,
+  WEEKLY_BONUS_PER_WEEK,
+  type DailyView,
+} from "@/lib/games/poetry/weekly";
+import {
   PoetryQuestionType,
   PoetryRound,
   PoetryRoundView,
@@ -53,6 +65,31 @@ import { prisma } from "./prisma";
 const SESSION_TTL_MS = 10 * 60_000;
 /** 并发冲突时的事务选题重试上限（换种子重选） */
 const MAX_TX_ATTEMPTS = 3;
+
+/**
+ * 服务端本地日历日（Asia/Shanghai，YYYY-MM-DD）。
+ * 每日题口径（详设 §2.1）：Date.now() + Intl.DateTimeFormat 取本地日。
+ */
+function localDate(now: Date = new Date()): string {
+  // en-CA 输出 ISO 风格 YYYY-MM-DD
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+}
+
+/**
+ * 会话 stage → RankKind（单点推导，review A7）。
+ * 此前 start/judge/resume 三处各写 `stage === "EXAM" ? "EXAM" : "PRACTICE"`
+ * 三元，DAILY 会静默降级成 PRACTICE（结算摘要 kind / persona 映射全错）。
+ */
+export function kindOfStage(stage: string): RankKind {
+  if (stage === "EXAM") return "EXAM";
+  if (stage === "DAILY") return "DAILY";
+  return "PRACTICE";
+}
 
 /* ------------------------------------------------------------------ */
 /* 视图（对外下发，剥离 answerIndex 与素材 key）                        */
@@ -99,6 +136,12 @@ export interface RankView {
   seenCount: number;
   /** 近 3 局战绩（最新在前；功名估算 avgExp 与「最近战绩」行共用，D1 交付） */
   recentGames: Array<{ kind: RankKind; expGained: number; accuracy: number }>;
+  /** 已获成就 key 集（D2，详设 §2.3；文案客户端查纯逻辑表 ACHIEVEMENTS 渲染） */
+  badges: string[];
+  /** 每日题月历（D2，详设 §2.1） */
+  daily: DailyView;
+  /** 语料总数（D3 诗词阁分母；D2 先行接入 `Poem.count()` 口径） */
+  corpusTotal: number;
 }
 
 /** 官阶开局视图 */
@@ -132,6 +175,8 @@ export interface RankSummary {
   rank: RankView;
   /** 结算台词（D1：擢升 / 失败 / 研习三分支，persona 纯函数拼装） */
   settleLine: string;
+  /** 本次新达成成就 key（D2；文案客户端查纯逻辑表 ACHIEVEMENTS 渲染） */
+  newBadges: string[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -141,8 +186,8 @@ export interface RankSummary {
 export interface StartRankedInput {
   /** 玩家 ID（官阶模式必填；缺失时服务端 400 —— 功名 / 已见必须归属玩家持久化） */
   playerId?: string;
-  /** PRACTICE 研习 / EXAM 科考（皇帝大考 = EXAM + rankId 10；每日题尚未开放，服务端拒绝） */
-  kind: "PRACTICE" | "EXAM";
+  /** PRACTICE 研习 / EXAM 科考（皇帝大考 = EXAM + rankId 10）/ DAILY 每日题 */
+  kind: "PRACTICE" | "EXAM" | "DAILY";
   /**
    * 官阶 id（0..10）。缺省时服务端按玩家当前官阶推导：
    * - PRACTICE：必须 = 玩家当前官阶（只能研习本官阶窗口）。
@@ -168,7 +213,7 @@ export async function startRankedSession(
   if (!playerId || typeof playerId !== "string") {
     throw new ApiError(400, "官阶模式必须提供 playerId");
   }
-  if (kind !== "PRACTICE" && kind !== "EXAM") {
+  if (kind !== "PRACTICE" && kind !== "EXAM" && kind !== "DAILY") {
     throw new ApiError(400, "未知对局类型");
   }
 
@@ -180,8 +225,9 @@ export async function startRankedSession(
   if (!player) throw new ApiError(404, "玩家不存在");
   const currentRankId = player.rank?.rank ?? 0;
 
-  // 目标官阶：研习 = 当前官阶；科考 = 当前 + 1（越级 / 错位一律拒绝）
-  const targetId = kind === "PRACTICE" ? currentRankId : currentRankId + 1;
+  // 目标官阶（review A7 单点化）：研习/每日 = 当前官阶（本官阶研习窗口，
+  // DAILY 不越级）；科考 = 当前 + 1（越级 / 错位一律拒绝）
+  const targetId = kind === "EXAM" ? currentRankId + 1 : currentRankId;
   if (!isRankId(targetId)) {
     // 已是皇帝：研习 10 窗允许，科考无下一阶
     if (kind === "PRACTICE" && currentRankId === RANKS.length - 1) {
@@ -209,6 +255,25 @@ export async function startRankedSession(
     const required = RANKS[rankId].expToReach;
     if (required > 0 && totalExp < required) {
       throw new ApiError(403, `功名不足（还差 ${required - totalExp}）`);
+    }
+  }
+
+  // 每日题：一玩家一日一局（幂等；详设 §2.1 服务端时序）
+  // settled → 409；未结算且会话有效 → 409（客户端转 resume 续答）；
+  // 会话 EXPIRED / 不存在（review A2 死锁修复）→ 事务内占位换新 sessionId 重建，
+  // 旧会话作废不结算（功名不入账，与 PRACTICE 弃局同口径），当日机会不卡死。
+  let dailyDate: string | null = null;
+  if (kind === "DAILY") {
+    dailyDate = localDate();
+    const daily = await prisma.playerDaily.findUnique({
+      where: { playerId_date: { playerId, date: dailyDate } },
+    });
+    if (daily) {
+      if (daily.settled) throw new ApiError(409, "今日已答完每日题");
+      const sess = await prisma.gameSession.findUnique({ where: { id: daily.sessionId } });
+      if (sess && sess.status === "ACTIVE" && sess.expiresAt.getTime() > Date.now()) {
+        throw new ApiError(409, "今日每日题尚未结算，请继续作答");
+      }
     }
   }
 
@@ -267,6 +332,15 @@ export async function startRankedSession(
             playerId,
           },
         });
+        // 每日题占位（先占位后选题的「占位」步：upsert 同时覆盖
+        // ① 当日首开 create ② 过期重建时换新 sessionId——P2002 由外层重试兜底）
+        if (dailyDate) {
+          await tx.playerDaily.upsert({
+            where: { playerId_date: { playerId, date: dailyDate } },
+            create: { playerId, date: dailyDate, sessionId: id, settled: false, madeUp: false },
+            update: { sessionId: id, settled: false },
+          });
+        }
         return { id, expiresAt, rounds };
       });
 
@@ -389,14 +463,15 @@ export async function judgeRankedAnswer(
 
   const session = await prisma.gameSession.findUnique({
     where: { id: gameSessionId },
-    include: { answers: { select: { roundIndex: true, correct: true } } },
+    // roundIndex 必选 + 升序（review B5：maxCombo 推导按升序扫最大连续 correct 段）
+    include: { answers: { select: { roundIndex: true, correct: true, gained: true }, orderBy: { roundIndex: "asc" } } },
   });
   if (!session || session.mode !== "POETRY" || session.kind !== "RANKED") {
     throw new ApiError(404, "对局不存在");
   }
   const rounds = session.rounds as unknown as PoetryRound[];
   const rankId = session.rankId ?? 0;
-  const kind = (session.stage === "EXAM" ? "EXAM" : "PRACTICE") as RankKind;
+  const kind = kindOfStage(session.stage);
   const playerId = session.playerId;
 
   if (session.status !== "ACTIVE") throw new ApiError(410, "对局已结束");
@@ -567,9 +642,11 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
     });
 
     // 3. 本局全部判分（含最后一题，均在库）
+    //    select 含 roundIndex + 升序（review B5：maxCombo 按升序扫最大连续 correct 段）
     const answers = await tx.answerRecord.findMany({
       where: { sessionId: gameSessionId },
-      select: { correct: true, gained: true },
+      select: { roundIndex: true, correct: true, gained: true },
+      orderBy: { roundIndex: "asc" },
     });
     const correctCount = answers.filter((a) => a.correct).length;
     const totalRounds = answers.length;
@@ -577,6 +654,13 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
     const accuracy = totalRounds > 0
       ? Math.round((correctCount / totalRounds) * 100)
       : 0;
+    // 最大连击（升序扫最大连续 correct 段，10 题规模 O(n)）
+    let maxCombo = 0;
+    let run = 0;
+    for (const a of answers) {
+      run = a.correct ? run + 1 : 0;
+      if (run > maxCombo) maxCombo = run;
+    }
     const clear = judgeClear(accuracy);
 
     // 会话总分落库（与结算原子；排行榜只统计学段局，此处仅为数据完整）
@@ -585,6 +669,16 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
       where: { id: gameSessionId },
       data: { score: sessionScore, accuracy },
     });
+
+    // 每日题占位置已结算（详设 §2.1：DAILY 与 PRACTICE/EXAM 同通道结算，
+    // 结算事务内补 playerDaily.settled = true）
+    if (input.kind === "DAILY") {
+      const dDate = localDate();
+      await tx.playerDaily.updateMany({
+        where: { playerId, date: dDate, sessionId: gameSessionId },
+        data: { settled: true },
+      });
+    }
 
     // 4. 功名记账（单调累加：失败 / 弃局也保留已得功名）
     let rankRow = await tx.playerRank.findUnique({ where: { playerId } });
@@ -616,6 +710,64 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
       });
     }
 
+    // 6. 周奖补记（review B3 追溯范围收敛：仅「最近 8 个已完结 ISO 周」内、
+    //    PlayerDaily 历史可证真实连满且键未发过的周——不做全历史扫描；
+    //    连满判定纯函数 completedWeeks，幂等键 = ISO 周键 YYYY-WW）
+    const dailies = await tx.playerDaily.findMany({
+      where: { playerId, date: { gte: `1970-01-01` } },
+      select: { date: true, settled: true, madeUp: true },
+    });
+    const today = localDate();
+    const newWeeklyKeys = completedWeeks(dailies, today).filter(
+      (k) => !(rankRow.weeklyBonusKeys as unknown as string[]).includes(k),
+    );
+    if (newWeeklyKeys.length > 0) {
+      const bonusExp = newWeeklyKeys.length * WEEKLY_BONUS_PER_WEEK;
+      await tx.playerRank.update({
+        where: { playerId },
+        data: {
+          totalExp: totalExp + bonusExp,
+          weeklyBonusKeys: [
+            ...(rankRow.weeklyBonusKeys as unknown as string[]),
+            ...newWeeklyKeys,
+          ],
+        },
+      });
+      // 周奖功名计入本局实际入账（score = 实际入账功名，详设 §2.3 口径）
+      await tx.gameSession.update({
+        where: { id: gameSessionId },
+        data: { score: sessionScore + bonusExp },
+      });
+    }
+
+    // 7. 成就评估（事务尾：查持有集 → 纯函数评估 → createMany 新达成）
+    const earnedRows = await tx.playerAchievement.findMany({
+      where: { playerId },
+      select: { key: true },
+    });
+    const earnedKeys = earnedRows.map((r) => r.key);
+    const seenCount = await tx.playerSeenKey.count({
+      where: { playerId, key: { contains: ":" } },
+    });
+    const weeksCompleted = completedWeeks(dailies, today).length;
+    const ctx: AchievementCtx = {
+      rankId: currentRank,
+      newRank: promotion.newRank,
+      promoted: promotion.promoted,
+      correctCount,
+      totalRounds,
+      maxCombo,
+      seenCount,
+      weeksCompleted,
+      kind: input.kind,
+    };
+    const newBadges = evaluateAchievements(ctx, earnedKeys);
+    if (newBadges.length > 0) {
+      await tx.playerAchievement.createMany({
+        data: newBadges.map((key) => ({ playerId, key })),
+      });
+    }
+
     return {
       correctCount,
       totalRounds,
@@ -624,6 +776,7 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
       expGained: sessionScore,
       totalExp,
       promotion,
+      newBadges,
       // 结算台词（D1，详设 §1.2：按 kind 与 promotion.promoted 三分支）
       settleLine:
         input.kind !== "EXAM"
@@ -651,6 +804,7 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
     promotion: result.promotion,
     rank: rankView,
     settleLine: result.settleLine,
+    newBadges: result.newBadges,
   };
 }
 
@@ -658,9 +812,9 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
 /* 官阶视图                                                            */
 /* ------------------------------------------------------------------ */
 
-/** 构建官阶进度视图（功名条 / 路线图数据源；含 D1 交付的 seenCount / recentGames） */
+/** 构建官阶进度视图（功名条 / 路线图数据源；D1 seenCount/recentGames + D2 badges/daily/corpusTotal） */
 async function buildRankView(playerId: string): Promise<RankView> {
-  const [row, seenCount, recentSessions] = await Promise.all([
+  const [row, seenCount, recentSessions, badgeRows, corpusTotal] = await Promise.all([
     prisma.playerRank.findUnique({ where: { playerId } }),
     // seenCount 口径（详设 §2.3，review A5）：只数 sourceKey 行（含冒号），
     // faceKey 行（竖线分隔，首段为题型枚举名）不重复计入。
@@ -673,7 +827,46 @@ async function buildRankView(playerId: string): Promise<RankView> {
       take: 3,
       select: { stage: true, score: true, accuracy: true },
     }),
+    prisma.playerAchievement.findMany({
+      where: { playerId },
+      select: { key: true },
+    }),
+    prisma.poem.count(),
   ]);
+  // 每日题月历数据（当月 + 8 周回扫窗口，周连满判定用）
+  const today = localDate();
+  const [ty, tm] = today.slice(0, 8).split("-").map(Number);
+  const todayD = Number(today.slice(8));
+  const mondayOfToday =
+    Date.UTC(ty, tm - 1, todayD) -
+    (((new Date(Date.UTC(ty, tm - 1, todayD)).getUTCDay() || 7) - 1) * 86400000);
+  const windowStart = mondayOfToday - 8 * 7 * 86400000;
+  const startStr = new Date(windowStart).toISOString().slice(0, 10);
+  const [monthRecords, historyRecords] = await Promise.all([
+    prisma.playerDaily.findMany({
+      where: { playerId, date: { gte: `${today.slice(0, 8)}01` } },
+      select: { date: true, settled: true, madeUp: true },
+    }),
+    prisma.playerDaily.findMany({
+      where: { playerId, date: { gte: startStr } },
+      select: { date: true, settled: true, madeUp: true },
+    }),
+  ]);
+  const monthStart = `${today.slice(0, 8)}01`;
+  const daysInMonth = new Date(Date.UTC(ty, tm, 0)).getUTCDate();
+  const madeUpThisMonth = monthRecords.filter((r) => r.madeUp).length;
+  const weeksThisMonth = completedWeeksThisMonth(historyRecords, today);
+  const daily: DailyView = {
+    cells: buildMonthCells({
+      monthStart,
+      daysInMonth,
+      today,
+      records: monthRecords,
+    }),
+    weeksCompleted: weeksThisMonth,
+    weeklyBonus: weeksThisMonth * WEEKLY_BONUS_PER_WEEK,
+    makeupLeft: Math.max(0, MONTHLY_MAKEUP_QUOTA - madeUpThisMonth),
+  };
   const rankId = row?.rank ?? 0;
   const totalExp = row?.totalExp ?? 0;
   const next = nextRank(rankId);
@@ -695,10 +888,13 @@ async function buildRankView(playerId: string): Promise<RankView> {
     // expGained 取 score 字段（结算口径 = 实际入账功名，D4 后为 hint 折后值）；
     // accuracy 取结算事务写入的 GameSession.accuracy（D1 起落库，详设 §2.3 推荐口径）
     recentGames: recentSessions.map((s) => ({
-      kind: (s.stage === "EXAM" ? "EXAM" : "PRACTICE") as RankKind,
+      kind: kindOfStage(s.stage),
       expGained: s.score,
       accuracy: s.accuracy,
     })),
+    badges: badgeRows.map((b) => b.key),
+    daily,
+    corpusTotal,
   };
 }
 
@@ -710,6 +906,49 @@ export async function getRankView(playerId: string): Promise<RankView> {
   const player = await prisma.player.findUnique({ where: { id: playerId } });
   if (!player) throw new ApiError(404, "玩家不存在");
   return buildRankView(playerId);
+}
+
+/* ------------------------------------------------------------------ */
+/* 功名簿视图（详设 §2.4：三区块数据源）                                 */
+/* ------------------------------------------------------------------ */
+
+/** 功名簿视图（GET /api/games/poetry/rank/ledger 的薄壳目标） */
+export interface LedgerView {
+  /** 成就 key 集（已获；未获由客户端拿 ACHIEVEMENTS 全表 diff 渲染剪影） */
+  badges: string[];
+  /** 每日题月历（与 RankView.daily 同源） */
+  daily: DailyView;
+  /** 累计功名（实际入账总功名） */
+  totalExp: number;
+  /** 已见题累计（review A5 口径：只数 sourceKey 行） */
+  seenCount: number;
+  /** 近 10 局功名柱状图（最新在后；score 即实际入账功名，与 recentGames 同源同口径，review C4） */
+  recentBars: Array<{ kind: RankKind; exp: number }>;
+}
+
+/** 构建功名簿视图 */
+export async function getLedgerView(playerId: string): Promise<LedgerView> {
+  const useDb = await isDbAvailable();
+  if (!useDb) throw new ApiError(503, "DB_UNAVAILABLE：功名簿需要数据库");
+  if (!playerId || typeof playerId !== "string") throw new ApiError(400, "参数不完整");
+  const player = await prisma.player.findUnique({ where: { id: playerId } });
+  if (!player) throw new ApiError(404, "玩家不存在");
+
+  const view = await buildRankView(playerId);
+  // 近 10 局（最新在后 → 柱状图从左到右时间正序；recentGames 是最新在前，此处反向）
+  const recent10 = await prisma.gameSession.findMany({
+    where: { playerId, kind: "RANKED", status: "FINISHED" },
+    orderBy: { createdAt: "asc" },
+    take: 10,
+    select: { stage: true, score: true },
+  });
+  return {
+    badges: view.badges,
+    daily: view.daily,
+    totalExp: view.totalExp,
+    seenCount: view.seenCount,
+    recentBars: recent10.map((s) => ({ kind: kindOfStage(s.stage), exp: s.score })),
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -755,7 +994,7 @@ export async function resumeRankedSession(
     include: { answers: { select: { roundIndex: true } } },
   });
   if (!session) return null;
-  const kind = (session.stage === "EXAM" ? "EXAM" : "PRACTICE") as RankKind;
+  const kind = kindOfStage(session.stage);
   const persona = personaFor(kind, session.rankId ?? 0);
   return {
     gameSessionId: session.id,

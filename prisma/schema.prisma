@@ -47,9 +47,42 @@ model PlayerRank {
   rank      Int      @default(0)
   /// 累计功名（单调不减；由对局结算一次性记账）
   totalExp  Int      @default(0)
+  /// 已发放周奖键集（形如 ["2026-W38"]，结算事务补记幂等，详设 §2.1 review B3）
+  weeklyBonusKeys Json @default("[]")
   updatedAt DateTime @updatedAt
 
   player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+}
+
+/// 每日题记录（幂等：一玩家一日一局，详设 §2.1）
+/// 无外键、只有 playerId 字符串——与既有 PlayerSeenKey 同风格，有意为之
+/// （匿名体系下玩家不删、免迁移负担，后人勿「补全外键」，review B10）
+model PlayerDaily {
+  playerId String
+  /// 服务端本地日期 YYYY-MM-DD（Asia/Shanghai）
+  date     String
+  /// 关联会话 id
+  sessionId String
+  /// 是否已结算（未结算可续答，TTL 内）
+  settled  Boolean  @default(false)
+  /// 补签标记（review A10）：仅对「过期未答」的历史日可由补签置 true；
+  /// 只影响月历展示与周连满判定，不加功名。真实作答日恒 false
+  madeUp   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@unique([playerId, date])
+  @@index([playerId, date])
+}
+
+/// 玩家已获成就（幂等唯一，详设 §2.2）
+model PlayerAchievement {
+  playerId String
+  /// 成就 key（纯逻辑层 ACHIEVEMENTS 表定义）
+  key      String
+  earnedAt DateTime @default(now())
+
+  @@unique([playerId, key])
+  @@index([playerId])
 }
 
 /// 玩家「已见题」持久化记录（诗词升官线专用）

@@ -97,9 +97,9 @@ export default function PoetryRankPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 开局（研习 / 科考）
+  // 开局（研习 / 科考 / 每日题）
   const startGame = useCallback(
-    async (kind: "PRACTICE" | "EXAM") => {
+    async (kind: "PRACTICE" | "EXAM" | "DAILY") => {
       const st = useRankGameStore.getState();
       st.reset();
       useRankGameStore.setState({ phase: "LOADING", kind });
@@ -172,6 +172,15 @@ export default function PoetryRankPage() {
 
   const examReady = rank ? rank.nextUnlocked : false;
   const isEmperorNow = rank ? rank.ranks[rank.rankId]?.isEmperor : false;
+  // 每日题今日状态（详设 §2.1 月历口径：done/made=已答，pending=未答）
+  const today = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+  const todayCell = rank?.daily.cells.find((c) => c && c.date === today) ?? null;
+  const dailyDone = todayCell ? todayCell.state === "done" || todayCell.state === "made" : false;
 
   return (
     <main className="mx-auto max-w-md px-4 py-8">
@@ -247,6 +256,25 @@ export default function PoetryRankPage() {
                     )}
                   </button>
                 )}
+
+                <button
+                  onClick={() => void startGame("DAILY")}
+                  disabled={dailyDone}
+                  className={
+                    dailyDone
+                      ? "w-full rounded-2xl border border-emerald-200 bg-emerald-50 py-3 text-sm font-bold text-emerald-600"
+                      : "w-full rounded-2xl bg-emerald-500 py-3 text-base font-bold text-white shadow active:scale-[0.99]"
+                  }
+                >
+                  {dailyDone ? "✅ 每日题已完成" : "🌱 每日题（1 题 · 积功名 · 连满得周奖）"}
+                </button>
+
+                <Link
+                  href="/play/poetry-rank/ledger"
+                  className="w-full rounded-2xl border border-indigo-200 bg-white py-3 text-center text-sm font-bold text-indigo-600 active:scale-[0.99]"
+                >
+                  🏮 功名簿（成就 · 月历 · 总览）
+                </Link>
               </div>
 
               <p className="mt-4 text-center text-xs text-zinc-400">

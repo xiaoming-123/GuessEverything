@@ -114,13 +114,14 @@ export function canTakeExam(currentRank: number, totalExp: number): boolean {
 
 /**
  * 官阶出卷所需的题数（由 kind 决定）。
- * 皇帝 Boss 一律 15 题（不论 kind）。
+ * 每日题恒 1 题（先于皇帝判断，review A6：皇帝阶玩家开 DAILY 也 1 题，
+ * 避免每天烧 15 个 g12 已见键、挤占登极大考池子）。
  */
 export function countFor(rankId: number, kind: RankKind): number {
+  if (kind === "DAILY") return DAILY_COUNT;
   const r = rankById(rankId);
   if (r.isEmperor) return EMPEROR_COUNT;
   if (kind === "EXAM") return EXAM_COUNT;
-  if (kind === "DAILY") return DAILY_COUNT;
   return PRACTICE_COUNT;
 }
 

@@ -16,6 +16,7 @@
 import { useEffect, useState } from "react";
 import { HERO_AVATARS } from "@/lib/art-assets";
 import { RANKS } from "@/lib/games/poetry/rank";
+import { ACHIEVEMENT_BY_KEY } from "@/lib/games/poetry/achievements";
 import type { RankSummary } from "@/lib/db/rank-service";
 
 /** 滚动数字（requestAnimationFrame 800ms，纯展示） */
@@ -78,6 +79,7 @@ export function RankSettleView({
 }) {
   const { promotion, kind } = summary;
   const isExam = kind === "EXAM";
+  const isDaily = kind === "DAILY";
   const promoted = promotion.promoted;
   const isExamFailed = !promoted && isExam && promotion.reason === "EXAM_FAILED";
   const fromLabel = RANKS[summary.rankId]?.label ?? "";
@@ -85,12 +87,18 @@ export function RankSettleView({
     ? RANKS[promotion.newRank]?.label ?? summary.rank.label
     : summary.rank.label;
   const isEmperorEnd = promoted && promotion.newRank === RANKS.length - 1 && RANKS[promotion.newRank]?.isEmperor;
+  // 本次新达成成就（D2：服务端只下发 key，文案客户端查纯逻辑表）
+  const newBadges = (summary.newBadges ?? []).map(
+    (k) => ACHIEVEMENT_BY_KEY.get(k),
+  ).filter((a): a is NonNullable<typeof a> => !!a);
 
   const headline = promoted
     ? `🎉 擢升为「${toLabel}」`
     : isExam
       ? "科考未中"
-      : "研习完成";
+      : isDaily
+        ? "每日题完成"
+        : "研习完成";
 
   const subline = !promoted
     ? isExamFailed
@@ -195,6 +203,24 @@ export function RankSettleView({
           </p>
         </div>
       </div>
+
+      {/* 本次新达成成就（D2） */}
+      {newBadges.length > 0 && (
+        <div className="animate-settle-card mb-4 rounded-2xl border border-amber-300 bg-amber-50 p-4">
+          <p className="text-sm font-bold text-amber-700">🏅 新达成成就</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {newBadges.map((a) => (
+              <span
+                key={a.key}
+                className="rounded-full border border-amber-200 bg-white px-3 py-1 text-xs font-medium text-amber-700"
+              >
+                {a.label}
+                <span className="ml-1 text-amber-400">{a.desc}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-3">
         {onRetry && (
