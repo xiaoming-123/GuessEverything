@@ -10,8 +10,9 @@
  * 头像走 art-assets 常量表（D5 前 emoji 占位）；表情在 D5 前不渲染（复用立绘本体）。
  */
 
-import { NPC_AVATARS } from "@/lib/art-assets";
+import { NPC_AVATARS, npcExpressionAsset } from "@/lib/art-assets";
 import { PERSONA_LABEL, type PersonaKey } from "@/lib/games/poetry/persona";
+import { ArtAvatar } from "./art-avatar";
 
 interface PersonaBubbleProps {
   persona: PersonaKey;
@@ -36,6 +37,7 @@ interface PersonaBubbleProps {
 
 export function PersonaBubble({
   persona,
+  expression,
   text,
   variant,
   prompt,
@@ -46,7 +48,13 @@ export function PersonaBubble({
   isLast,
   onNext,
 }: PersonaBubbleProps) {
-  const avatar = NPC_AVATARS[persona];
+  // 头像：有表情且人设有表情图时优先用表情（D5），否则回退立绘本体
+  const baseAvatar = NPC_AVATARS[persona];
+  const exprAvatar =
+    expression && expression !== "normal"
+      ? npcExpressionAsset(persona, expression)
+      : null;
+  const avatar = exprAvatar ?? baseAvatar;
 
   // 连击视觉三档：0-2 普通 indigo 描边；3-4 琥珀金描边；>=5 琥珀金光晕（纯 CSS）
   const frameCls =
@@ -63,10 +71,11 @@ export function PersonaBubble({
   return (
     <div className={`rounded-2xl border p-4 transition-all duration-300 ${frameCls}`}>
       <div className="flex items-start gap-3">
-        {/* 头像（D5 后为 <img>；此处按 emoji 渲染，常量表换路径后仅需改本组件） */}
-        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white text-2xl">
-          {avatar}
-        </div>
+        {/* 头像（D5：<img> 立绘/表情，未入库回退 emoji） */}
+        <ArtAvatar
+          src={avatar}
+          containerClassName="h-11 w-11 shrink-0 rounded-full border border-zinc-200 bg-white"
+        />
         <div className="min-w-0 flex-1">
           <p className="mb-1 text-xs font-medium text-zinc-400">
             {PERSONA_LABEL[persona]}

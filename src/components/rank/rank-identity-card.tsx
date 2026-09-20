@@ -9,6 +9,7 @@
  */
 
 import { HERO_AVATARS } from "@/lib/art-assets";
+import { ArtAvatar } from "./art-avatar";
 import type { RankView } from "@/lib/db/rank-service";
 
 export function RankIdentityCard({ rank }: { rank: RankView }) {
@@ -29,9 +30,10 @@ export function RankIdentityCard({ rank }: { rank: RankView }) {
   return (
     <div className="rounded-2xl border border-indigo-200 bg-white p-4 shadow-sm">
       <div className="flex items-center gap-3">
-        <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border border-indigo-100 bg-indigo-50 text-4xl">
-          {avatar}
-        </div>
+        <ArtAvatar
+          src={avatar}
+          containerClassName="h-16 w-16 shrink-0 rounded-2xl border border-indigo-100 bg-indigo-50"
+        />
         <div className="min-w-0 flex-1">
           <p className="text-2xl font-bold leading-tight text-indigo-700">{rank.label}</p>
           <p className="mt-0.5 truncate text-xs text-zinc-500">{rank.subtitle}</p>

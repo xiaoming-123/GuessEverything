@@ -16,6 +16,7 @@
  */
 
 import { HERO_AVATARS } from "@/lib/art-assets";
+import { ArtAvatar } from "./art-avatar";
 import type { RankProgressView, RankView } from "@/lib/db/rank-service";
 
 export function RankRoad({ rank }: { rank: RankView }) {
@@ -74,9 +75,10 @@ export function RankRoad({ rank }: { rank: RankView }) {
               <span
                 key={r.key}
                 title={`${r.label} ✓`}
-                className="flex h-6 w-6 items-center justify-center rounded-full border border-indigo-200 bg-indigo-100 text-xs"
+                className="flex h-6 w-6 items-center justify-center overflow-hidden rounded-full border border-indigo-200 bg-indigo-100"
               >
-                {HERO_AVATARS[r.rankId]}
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={HERO_AVATARS[r.rankId]} alt={r.label} className="h-full w-full object-contain" />
               </span>
             ))}
           </div>
@@ -142,16 +144,23 @@ function RoadNode({
   return (
     <li className="relative flex items-center gap-3 py-1.5">
       <span
-        className={`absolute -left-4 flex items-center justify-center rounded-full ${dotCls}`}
+        className={`absolute -left-4 flex items-center justify-center overflow-hidden rounded-full ${dotCls}`}
       >
-        {isEmperorVisible ? "👑" : fog ? "？" : next ? HERO_AVATARS[r.rankId] : ""}
+        {isEmperorVisible ? (
+          "👑"
+        ) : fog ? (
+          "？"
+        ) : next ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={HERO_AVATARS[r.rankId]} alt={r.label} className="h-full w-full object-contain" />
+        ) : (
+          ""
+        )}
       </span>
       {current ? (
         // 当前阶：大节点 + 立绘 + 高亮
         <div className="flex flex-1 items-center gap-3 rounded-xl border border-indigo-300 bg-indigo-50/70 px-3 py-2">
-          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-white text-2xl">
-            {HERO_AVATARS[r.rankId]}
-          </span>
+          <ArtAvatar src={HERO_AVATARS[r.rankId]} containerClassName="h-10 w-10 rounded-xl bg-white" />
           <span>
             <span className="block text-base font-bold text-indigo-700">{r.label}</span>
             <span className="block text-xs text-indigo-400">{r.subtitle}</span>
@@ -160,8 +169,9 @@ function RoadNode({
       ) : next ? (
         // 下一阶：半剪影（称号可见、副标题 ——）
         <div className="flex flex-1 items-center gap-3 px-1">
-          <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-100 text-xl fog-half">
-            {HERO_AVATARS[r.rankId]}
+          <span className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-lg bg-zinc-100 fog-half">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={HERO_AVATARS[r.rankId]} alt={r.label} className="h-full w-full object-contain" />
           </span>
           <span>
             <span className="block text-sm font-semibold text-zinc-600">{r.label}</span>

@@ -17,6 +17,7 @@ import { useEffect, useState } from "react";
 import { HERO_AVATARS } from "@/lib/art-assets";
 import { RANKS } from "@/lib/games/poetry/rank";
 import { ACHIEVEMENT_BY_KEY } from "@/lib/games/poetry/achievements";
+import { ArtAvatar } from "./art-avatar";
 import type { RankSummary } from "@/lib/db/rank-service";
 
 /** 滚动数字（requestAnimationFrame 800ms，纯展示） */
@@ -118,12 +119,12 @@ export function RankSettleView({
           {isEmperorEnd ? (
             // 皇帝终点：布衣 → 皇帝两张立绘并排
             <div className="flex items-center justify-center gap-6">
-              <div className="animate-settle-promote text-5xl opacity-60 grayscale">
-                {HERO_AVATARS[0]}
+              <div className="animate-settle-promote opacity-60 grayscale">
+                <ArtAvatar src={HERO_AVATARS[0]} containerClassName="h-24 w-24" />
               </div>
               <span className="text-2xl text-amber-500">→</span>
-              <div className="animate-settle-promote text-6xl" style={{ animationDelay: "120ms" }}>
-                {HERO_AVATARS[promotion.newRank]}
+              <div className="animate-settle-promote" style={{ animationDelay: "120ms" }}>
+                <ArtAvatar src={HERO_AVATARS[promotion.newRank]} containerClassName="h-28 w-28" />
               </div>
             </div>
           ) : (
@@ -132,10 +133,10 @@ export function RankSettleView({
                 {fromLabel}
               </p>
               <div
-                className="animate-settle-promote mt-2 text-6xl"
+                className="animate-settle-promote mt-2"
                 style={{ transform: "scale(1.2)" }}
               >
-                {HERO_AVATARS[promotion.newRank]}
+                <ArtAvatar src={HERO_AVATARS[promotion.newRank]} containerClassName="h-28 w-28" />
               </div>
               <p className="mt-2 bg-gradient-to-r from-amber-500 to-amber-600 bg-clip-text text-3xl font-bold text-transparent">
                 {toLabel}
