@@ -14,6 +14,7 @@
 | D3 | 诗词阁 + 2 类新题型（引擎 + 容量口径同步） | schema + 引擎 + 容量审计 + 前端 | 单测 + 审计脚本 + 浏览器 |
 | D4 | 问同窗提示 + 剪影竞猜 | API + 前端 | 集成 + 浏览器 |
 | D5 | 美术批量（12 阶 Q 版 + 表情包）入库 + 全量终验 | 资产 + 前端 | 构建 + 浏览器 15+ 项 |
+| D6 | 皇榜（排行榜，纯派生视图 + 虚拟榜位 + 低压力展示） | 纯逻辑 + API + 前端 | 单测 + 集成 + 浏览器 |
 
 P2（内侍/同窗/说书人立绘、限时事件框架、分享卡、外观）不在本文展开，仅列接口预留位。
 
@@ -359,6 +360,68 @@ model RankGuess {
 
 ---
 
+## 4.5 D6 · 皇榜（排行榜）
+
+> 定位：本玩法进度的**派生展示面**，不是新玩法模式（不违反"本分支只含诗词升官"）；
+> 零 schema 改动（rank/totalExp/nickname 全部是服务端结算权威写入的既有数据）；
+> 评估结论 2026-09-20：成本 ≈60 行服务端 + 150 行前端，防作弊随既有结算通道白捡。
+
+**冷启动（最大风险）**：纯逻辑层内置 **5 个虚拟榜位**（公版名人 + 架空官衔/功名，固定值，`isVirtual: true` 标记，架空称号不宣称真实官制），与真实数据合并排序。主题贴切（皇榜=金殿金榜），并为低进度玩家提供**追赶锚点**（进度系统前方要有可见目标，Meta §2.3）。
+**低压力展示**（Octalysis：排行是 Black Hat 压力源，v1 取低压力形态）：
+- 只展示 **Top 100** + 我的追赶卡片，不做全量名次；
+- 我的位次用**追赶叙事**而非精确名次：`与第 N 位{称号}只有一卷之差（还差 X 功名）`（N = 我前面第一个人）；我进不了前 100 时显示 `距金榜还差 X 功名（上一位：第 100 名{称号}）`；
+- 排序 `rank DESC, totalExp DESC`（官阶为主、功名细粒度防同阶并列僵局）。
+**v1 不做赛季重置**：常青榜；赛季化钩子随 P2 限时事件框架一起做（避免现在引入时间轴复杂度）。
+**防刷评估**：功名有界（每局 ≤10 题 × 计分上限，会话 TTL + 已见占用限速），Top 100 + 2 条 count 查询在单节点 SQLite 无压力。
+
+**纯逻辑层 `src/lib/games/poetry/leaderboard.ts`（新建，零依赖）**：
+
+```ts
+export interface LeaderboardEntry {
+  /** 展示名（真实玩家昵称 / 虚拟名人） */
+  name: string;
+  avatar: string;            // emoji（虚拟与真实同规格）
+  rankLabel: string;         // 官衔称号（架空）
+  totalExp: number;
+  isVirtual: boolean;
+}
+/** 虚拟榜位（5 个公版名人，固定官衔/功名；架空，不宣称真实官制） */
+export const VIRTUAL_ENTRIES: LeaderboardEntry[]; // 李白·翰林 / 苏轼·侍郎 / 辛弃疾·知府 / 王勃·举人 / 孟浩然·秀才
+
+/** 合并排序：官阶 → 功名 → name（虚拟与真实同规则；rankLabel 由 rank id 查 RANKS 表回填） */
+export function mergeLeaderboard(
+  real: Array<{ name: string; avatar: string; rank: number; totalExp: number }>,
+  limit = 100,
+): LeaderboardEntry[];
+```
+
+**API**（GET 明文，与 `/api/games/poetry/rank` 同模式）：
+
+```ts
+// GET /api/games/poetry/rank/leaderboard
+// 出参：
+export interface LeaderboardView {
+  items: LeaderboardEntry[];              // Top 100（虚拟+真实合并）
+  my: {
+    rankLabel: string;
+    totalExp: number;
+    /** 我前面的人数（名次 = 该值 + 1；不含虚拟位时另行标注） */
+    aboveCount: number;
+    /** 追赶叙事目标：我前面最近一位的 totalExp（算 gapToAbove 用） */
+    aboveExp: number;
+  } | null;                               // playerId 缺失/未注册时 null
+}
+```
+
+- 服务端：`prisma.playerRank.findMany({ include: { player: { select: { nickname, avatar } } }, orderBy: [{ rank: "desc" }, { totalExp: "desc" }], take: 200 })` → `mergeLeaderboard` 截 100；`my` = `playerRank.findUnique` + `count({ where: { OR: [{ rank: > 我的 rank }, { rank: = 我的 rank, totalExp: > 我的 exp }] } })`。
+- 前端 `src/app/play/poetry-rank/leaderboard/page.tsx`：金榜样式（琥珀金主题，与 indigo 主调形成"金殿"反差）；列表 Top 100（前三名 🥇🥈🥉 或印章标记，虚拟位带名人小传一句话 hover/点击）；底部我的追赶卡片（§4.5 叙事文案）。IDLE 页右上 🏮 入口旁加 📜「皇榜」。
+- 测试：
+  - 单测：`mergeLeaderboard` 官阶/功名排序、虚拟位混排、limit 截断、同官阶同功名不抖动（稳定排序，加 name 作第三键）；
+  - 集成：leaderboard 路由（空库 → 全虚拟位；注入玩家 → 排序与 aboveCount/gap 正确；playerId 缺失 → my=null 200）。
+  - 浏览器：空库渲染虚拟榜；注入后名次与追赶文案；窄屏。
+
+---
+
 ## 5. API 与路由清单（汇总）
 
 | 路由 | 方法 | 加密 | 新增/改造 |
@@ -371,6 +434,7 @@ model RankGuess {
 | `/api/games/poetry/rank/gallery` | GET | 明文 | 新增：诗词阁分页 |
 | `/api/games/poetry/rank/hint` | POST | withCrypto | 新增：问同窗 |
 | `/api/games/poetry/rank/guess` | POST | withCrypto | 新增：剪影竞猜 |
+| `/api/games/poetry/rank/leaderboard` | GET | 明文 | 新增：皇榜（Top 100 + 我的追赶卡，D6） |
 
 新增路由全部薄壳（`withCrypto` 包装 + 参数校验），业务落 `rank-service.ts`（同文件新增分区，保持官阶业务单点）；gallery/ledger 的只读查询可独立 `gallery-service.ts`（避免 rank-service 继续膨胀）。
 
@@ -424,11 +488,17 @@ model RankGuess {
 **D5**：
 - 资产入库后：12 张立绘一致性目视（对照 §2.2 装束表逐阶核对道具）；全浏览器回归（原 15 项 + D1-D4 新增项）。
 
+**D6**：
+- 单测：`mergeLeaderboard`（官阶/功名/name 三键稳定排序、虚拟位混排、limit 截断、空 real 返回全虚拟）。
+- 集成：路由（空库 → 全虚拟位且 `my=null`；注入 3 玩家 → 排序/aboveCount/aboveExp 精确断言；playerId 缺失 → 200 + my=null）。
+- 浏览器：空库渲染；注入后追赶文案与名次；前三名样式；窄屏。
+
 ---
 
 ## 8. 明确不做（边界声明）
 
-- 不做好友/排行榜/账号体系（匿名体系限制，方案 §5.5）；
+- 不做好友/账号体系（匿名体系限制，方案 §5.5）；**皇榜例外已落 D6**（纯派生只读视图，无社交关系，不算玩法模式）；
+- 皇榜 v1 不做赛季重置、不做精确名次全量展示（§4.5）；
 - 不做真实官制宣称（架空文案红线）；
 - 不做付费/广告（副业项目当前阶段）；
 - 不引入新玩法模式（本分支只含诗词升官）；
