@@ -9,6 +9,13 @@ const modes = [
     ready: true,
   },
   {
+    href: "/play/poetry-rank",
+    title: "诗词升官",
+    desc: "布衣 → 11 阶官衔 + 皇帝登极大考 · 研习积功名 · 科考擢升",
+    emoji: "🎓",
+    ready: true,
+  },
+  {
     href: "/play/actor",
     title: "演员猜猜",
     desc: "代表作与经典角色，无图纯文字猜猜 TA 是谁",

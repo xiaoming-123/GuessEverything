@@ -308,11 +308,22 @@ export interface RankedJudgeView {
   correct: boolean;
   timeout?: boolean;
   correctAnswer: string;
+  /** 判题解释（出自哪首，服务端生成；客户端无 meta） */
+  explanation: string;
   gained: number;
   multiplier: number;
   totalScore: number;
   finished: boolean;
   summary?: RankSummary;
+}
+
+/**
+ * 判题解释（官阶模式）。服务端持有 meta（客户端视图已剥离），
+ * 拼「出自《诗题》·朝代·作者」；客户端据此展示出处。
+ */
+function buildExplanation(round: PoetryRound): string {
+  const { poemTitle, poet, dynasty } = round.meta;
+  return `出自《${poemTitle}》 · ${dynasty} · ${poet}`;
 }
 
 /**
@@ -407,6 +418,7 @@ export async function judgeRankedAnswer(
       correct,
       timeout,
       correctAnswer: round.options[round.answerIndex],
+      explanation: buildExplanation(round),
       gained: score.gained,
       multiplier: score.multiplier,
       totalScore,
@@ -432,6 +444,7 @@ export async function judgeRankedAnswer(
     correct,
     timeout,
     correctAnswer,
+    explanation: buildExplanation(round),
     gained: score.gained,
     multiplier: score.multiplier,
     totalScore,
@@ -610,4 +623,56 @@ export async function getRankView(playerId: string): Promise<RankView> {
   const player = await prisma.player.findUnique({ where: { id: playerId } });
   if (!player) throw new ApiError(404, "玩家不存在");
   return buildRankView(playerId);
+}
+
+/* ------------------------------------------------------------------ */
+/* 刷新恢复：取玩家未完成的官阶局                                        */
+/* ------------------------------------------------------------------ */
+
+/** 可恢复的官阶局视图（刷新后继续作答） */
+export interface RankedResumeView {
+  gameSessionId: string;
+  kind: RankKind;
+  rankId: number;
+  label: string;
+  expiresAt: string;
+  /** 已作答轮次（客户端跳过，从第一个未答的继续） */
+  answeredIndexes: number[];
+  /** 当前累计分 */
+  score: number;
+  rounds: PoetryRoundView[];
+}
+
+/**
+ * 取玩家最近一局未结束（ACTIVE 且未超时）的官阶局。
+ * 无则返回 null（前端回落到官途主页）。
+ */
+export async function resumeRankedSession(
+  playerId: string,
+): Promise<RankedResumeView | null> {
+  const useDb = await isDbAvailable();
+  if (!useDb) throw new ApiError(503, "DB_UNAVAILABLE：官阶模式需要数据库");
+  if (!playerId || typeof playerId !== "string") throw new ApiError(400, "参数不完整");
+  const session = await prisma.gameSession.findFirst({
+    where: {
+      playerId,
+      mode: "POETRY",
+      kind: "RANKED",
+      status: "ACTIVE",
+      expiresAt: { gt: new Date() },
+    },
+    orderBy: { createdAt: "desc" },
+    include: { answers: { select: { roundIndex: true } } },
+  });
+  if (!session) return null;
+  return {
+    gameSessionId: session.id,
+    kind: (session.stage === "EXAM" ? "EXAM" : "PRACTICE") as RankKind,
+    rankId: session.rankId ?? 0,
+    label: RANKS[session.rankId ?? 0].label,
+    expiresAt: session.expiresAt.toISOString(),
+    answeredIndexes: session.answers.map((a) => a.roundIndex),
+    score: session.score,
+    rounds: (session.rounds as unknown as PoetryRound[]).map(toRoundView),
+  };
 }
