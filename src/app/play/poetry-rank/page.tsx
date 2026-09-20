@@ -180,11 +180,20 @@ export default function PoetryRankPage() {
           ← 学段闯关
         </Link>
         <div className="text-sm font-medium">🎓 诗词升官</div>
-        {s.phase !== "IDLE" && s.gameSessionId && (
-          <div className="text-sm">
-            <span className="text-zinc-400">{KIND_LABEL[s.kind]}</span> 得分{" "}
-            <span className="font-bold tabular-nums">{s.score}</span>
-          </div>
+        {s.phase === "IDLE" ? (
+          <Link
+            href="/play/poetry-rank/leaderboard"
+            className="text-sm font-medium text-amber-600 hover:text-amber-700"
+          >
+            📜 皇榜
+          </Link>
+        ) : (
+          s.gameSessionId && (
+            <div className="text-sm">
+              <span className="text-zinc-400">{KIND_LABEL[s.kind]}</span> 得分{" "}
+              <span className="font-bold tabular-nums">{s.score}</span>
+            </div>
+          )
         )}
       </div>
 
