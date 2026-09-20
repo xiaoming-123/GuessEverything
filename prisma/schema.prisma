@@ -71,6 +71,7 @@ model Player {
 
   sessions   GameSession[]
   progresses PlayerProgress[]
+  rank       PlayerRank?
 }
 
 /// 玩家关卡进度（每模式每关卡一条，取历史最优）
@@ -91,12 +92,42 @@ model PlayerProgress {
   @@index([mode, stage, stars])
 }
 
+/// 玩家官阶档案（诗词升官线：布衣 → 11 阶官衔 + 皇帝，架空称号路线）
+/// 一玩家一条；功名（totalExp）只增不减，失败/弃局不扣
+model PlayerRank {
+  playerId  String   @unique
+  /// 当前官阶 id（0..10，对应 rank.ts 的 RANKS）
+  rank      Int      @default(0)
+  /// 累计功名（单调不减；由对局结算一次性记账）
+  totalExp  Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+}
+
+/// 玩家「已见题」持久化记录（诗词升官线专用）
+/// 出题即占用（sourceKey/faceKey 任一维度），会试/科考/每日题严格排除已见；
+/// 永久保留（重启不遗忘）；旧学段模式仍用进程内 LRU，互不影响
+model PlayerSeenKey {
+  playerId String
+  /// 素材 key（poemId:lineIndex:questionType）
+  key      String
+  createdAt DateTime @default(now())
+
+  @@unique([playerId, key])
+  @@index([playerId])
+}
+
 /// 一次对局会话：轮次完整数据（含答案）仅存服务端，永不下发
 model GameSession {
   id        String   @id @default(cuid())
   mode      String // POETRY | ACTOR | OBJECT | FEIHUALING
-  /// 学段/难度快照
+  /// 对局形态：STAGE 学段闯关（旧玩法）| RANKED 官阶模式（诗词升官）
+  kind      String   @default("STAGE")
+  /// 学段/难度快照（RANKED 模式下为研习/科考标记）
   stage     String
+  /// 官阶模式专用：出题所在官阶 id（EXAM 时为目标官阶）
+  rankId    Int?
   /// 出题引擎产出的轮次数据（含 answer，服务端专用）
   rounds    Json
   /// 轮次总数
@@ -108,6 +139,8 @@ model GameSession {
   createdAt DateTime @default(now())
   /// 归属玩家（排行榜/进度归集）；旧会话与未注册玩家为空
   playerId  String?
+  /// 结算一次性记账标记（playerId:kind 的幂等键，结算时 create 占位，重复结算即冲突）
+  settleKey String?
 
   answers AnswerRecord[]
   player  Player?        @relation(fields: [playerId], references: [id], onDelete: SetNull)
@@ -130,6 +163,8 @@ model AnswerRecord {
   correctAnswer String
   /// 响应耗时 ms，用于计分
   timeMs     Int
+  /// 本题判分（= score.ts computeScore 的 gained；结算时从 DB 求和，崩溃可恢复）
+  gained     Int      @default(0)
   createdAt  DateTime @default(now())
 
   session GameSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
