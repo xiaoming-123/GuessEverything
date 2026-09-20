@@ -1,6 +1,6 @@
 # 诗词升官：修正后的题库容量审计
 
-生成时间：2026-09-20T02:32:34.508Z。由 scripts/poetry-capacity-audit.ts 生成。
+生成时间：2026-09-20T08:57:28.732Z。由 scripts/poetry-capacity-audit.ts 生成。
 
 ## 统计边界与假设
 
