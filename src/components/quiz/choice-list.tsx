@@ -17,6 +17,8 @@ interface ChoiceListProps {
   locked: boolean;
   theme: QuizTheme;
   onChoose: (index: number) => void;
+  /** 问同窗移除的选项索引（D4 详设 §4.1：灰置不可点，不泄答案） */
+  removedIndexes?: number[];
 }
 
 export function ChoiceList({
@@ -27,15 +29,22 @@ export function ChoiceList({
   locked,
   theme,
   onChoose,
+  removedIndexes,
 }: ChoiceListProps) {
+  const removed = removedIndexes ? new Set(removedIndexes) : null;
   return (
     <div className="grid gap-3">
       {options.map((opt, i) => {
+        const isRemoved = removed?.has(i) ?? false;
         const isSelected = selected === i;
         const isAnswer = correctAnswer !== null && opt === correctAnswer;
         let cls = `border-zinc-200 bg-white ${QUIZ_THEME[theme].optionHover}`;
         let badgeCls = "bg-zinc-100 text-zinc-500";
-        if (reveal && isAnswer) {
+        if (isRemoved && !reveal) {
+          // 问同窗移除项：灰置、不可点（判题态恢复原样式以便揭示正确答案）
+          cls = "border-zinc-100 bg-zinc-50 opacity-40";
+          badgeCls = "bg-zinc-100 text-zinc-300";
+        } else if (reveal && isAnswer) {
           cls = "border-emerald-500 bg-emerald-50 font-semibold animate-correct-pop";
           badgeCls = "bg-emerald-500 text-white";
         } else if (reveal && isSelected && !isAnswer) {
@@ -52,7 +61,7 @@ export function ChoiceList({
           <button
             key={i}
             type="button"
-            disabled={reveal || locked}
+            disabled={reveal || locked || isRemoved}
             onClick={() => onChoose(i)}
             style={{ animationDelay: `${i * 45}ms` }}
             className={`animate-question-in flex items-center gap-3 rounded-xl border px-4 py-3 text-left transition active:scale-[0.98] disabled:cursor-default ${cls}`}

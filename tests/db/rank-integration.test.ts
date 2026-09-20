@@ -23,12 +23,15 @@ import {
   getLedgerView,
   getRankView,
   judgeRankedAnswer,
+  requestHint,
   resumeRankedSession,
   startRankedSession,
+  submitRankGuess,
 } from "@/lib/db/rank-service";
 import { makeUpDaily } from "@/lib/db/daily-service";
 import { buildRankedRounds } from "@/lib/games/poetry/engine";
 import { RANKS } from "@/lib/games/poetry/rank";
+import { GUESS_REWARD } from "@/lib/games/poetry/guess";
 import {
   PoetryQuestionType,
   type PoemCorpusItem,
@@ -799,25 +802,29 @@ describe("诗词升官 · D3 诗词阁与新题型", () => {
     const pid = await makePlayer();
     await grantExp(pid, 10000);
     await setRank(pid, 3); // 举人 → 研习窗口 [3,7]，rankId>=3 才混入新题型
-    const v = await startRankedSession({ playerId: pid, kind: "PRACTICE", rankId: 3 });
-    expect(v.rankId).toBe(3);
-    const sess = (await prisma.gameSession.findUnique({ where: { id: v.gameSessionId } }))!;
-    const rounds = sess.rounds as unknown as {
-      type: string; sourceKey: string; options: string[]; answerIndex: number;
-    }[];
-    // 足量语料下新题型必然混入（FILL_CHAR 或 DYNASTY_PICK 至少一类）
-    const hasNew = rounds.some(
-      (r) => r.type === "FILL_CHAR" || r.type === "DYNASTY_PICK",
-    );
+    // 新题型按素材 30% 名义概率追加（Date.now 种子，生产路径）——单局 10 题不保证混入，
+    // 有界重试直到抽到含新题型的一局（review B9：引擎层混入用固定种子精确断言，
+    // 此集成路径走生产随机源，故以「混入存在性」+ 有界重试保证确定性收尾）。
+    let v: Awaited<ReturnType<typeof startRankedSession>> | null = null;
+    let hasNew = false;
+    for (let attempt = 0; attempt < 12 && !hasNew; attempt++) {
+      const candidate = await startRankedSession({ playerId: pid, kind: "PRACTICE", rankId: 3 });
+      const sess = (await prisma.gameSession.findUnique({ where: { id: candidate.gameSessionId } }))!;
+      const rs = sess.rounds as unknown as { type: string }[];
+      hasNew = rs.some((r) => r.type === "FILL_CHAR" || r.type === "DYNASTY_PICK");
+      if (hasNew) v = candidate;
+    }
+    expect(v).not.toBeNull(); // 12 次内必混入（每素材 30% 名义概率，足量语料下极大概率命中）
+    expect(v!.rankId).toBe(3);
     expect(hasNew).toBe(true);
     // 视图契约：不下发 answerIndex / meta / sourceKey
-    for (const r of v.rounds) {
+    for (const r of v!.rounds) {
       expect(r).not.toHaveProperty("answerIndex");
       expect(r).not.toHaveProperty("meta");
       expect(r).not.toHaveProperty("sourceKey");
     }
     // 全对判题 → 结算功名 >0（新题型判题路径与基础题型同）
-    const last = await play(v.gameSessionId, allCorrect);
+    const last = await play(v!.gameSessionId, allCorrect);
     expect(last.summary!.expGained).toBeGreaterThan(0);
     expect(last.summary!.rankId).toBe(3);
   });
@@ -835,5 +842,194 @@ describe("诗词升官 · D3 诗词阁与新题型", () => {
     expect(res2.ok).toBe(true);
     if (!res2.ok) return;
     expect(res2.rounds.some((r) => r.sourceKey === fill.sourceKey)).toBe(false);
+  });
+});
+
+describe("诗词升官 · D4 问同窗与剪影竞猜", () => {
+  /** 置玩家官阶（研习/科考/竞猜门槛判定用） */
+  async function setRank(pid: string, rank: number): Promise<void> {
+    const existing = await prisma.playerRank.findUnique({ where: { playerId: pid } });
+    if (existing) {
+      await prisma.playerRank.update({ where: { playerId: pid }, data: { rank } });
+    } else {
+      await prisma.playerRank.create({ data: { playerId: pid, rank, totalExp: 0 } });
+    }
+  }
+
+  it("hint 原子抢占：并发双请求仅 1 成功（输家 409），removedIndexes 全 ≠ answerIndex", async () => {
+    const pid = await makePlayer();
+    const v = await startRankedSession({ playerId: pid, kind: "PRACTICE" });
+    const rounds = (await prisma.gameSession.findUnique({ where: { id: v.gameSessionId } }))!
+      .rounds as unknown as { answerIndex: number; options: string[] }[];
+    const r0 = rounds[0];
+    // 并发双请求：仅 1 成功（hintUsed false→true 条件更新原子占位）
+    const results = await Promise.allSettled([
+      requestHint({ playerId: pid, gameSessionId: v.gameSessionId, roundIndex: 0 }),
+      requestHint({ playerId: pid, gameSessionId: v.gameSessionId, roundIndex: 0 }),
+    ]);
+    const ok = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(ok).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    // 成功方：恒 2 个移除位，全 ≠ answerIndex
+    const removed = (ok[0] as PromiseFulfilledResult<unknown>).value as { removedIndexes: number[] };
+    expect(removed.removedIndexes).toHaveLength(2);
+    for (const i of removed.removedIndexes) {
+      expect(i).not.toBe(r0.answerIndex);
+      expect(i).toBeGreaterThanOrEqual(0);
+      expect(i).toBeLessThan(r0.options.length);
+    }
+    // 落库 hintUsed=true + hintRoundIndex=0 + hintRemoved
+    const sess = await prisma.gameSession.findUnique({ where: { id: v.gameSessionId } });
+    expect(sess?.hintUsed).toBe(true);
+    expect(sess?.hintRoundIndex).toBe(0);
+    // 已用提示后再请求 → 409
+    await expect(
+      requestHint({ playerId: pid, gameSessionId: v.gameSessionId, roundIndex: 1 }),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("hint 仅当前未答轮次有效：已答轮次 → 400，越界 → 400", async () => {
+    const pid = await makePlayer();
+    const v = await startRankedSession({ playerId: pid, kind: "PRACTICE" });
+    // 先答第 0 题
+    const rounds = await sessionRounds(v.gameSessionId);
+    await judgeRankedAnswer({ gameSessionId: v.gameSessionId, roundIndex: 0, choice: rounds[0].answerIndex, timeMs: 500 });
+    // 对已答的第 0 题请求 hint → 400
+    await expect(
+      requestHint({ playerId: pid, gameSessionId: v.gameSessionId, roundIndex: 0 }),
+    ).rejects.toMatchObject({ status: 400 });
+    // 越界轮次 → 400
+    await expect(
+      requestHint({ playerId: pid, gameSessionId: v.gameSessionId, roundIndex: 99 }),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("结算功名 ×0.8 且 GameSession.score 落折后值（review B4）", async () => {
+    const pid = await makePlayer();
+    const v = await startRankedSession({ playerId: pid, kind: "PRACTICE" });
+    // 用 hint 后全对
+    await requestHint({ playerId: pid, gameSessionId: v.gameSessionId, roundIndex: 0 });
+    const rounds = await sessionRounds(v.gameSessionId);
+    let last: Awaited<ReturnType<typeof judgeRankedAnswer>>;
+    for (let i = 0; i < rounds.length; i++) {
+      last = await judgeRankedAnswer({ gameSessionId: v.gameSessionId, roundIndex: i, choice: rounds[i].answerIndex, timeMs: 500 });
+    }
+    // 本局判分之和（未折价）
+    const answers = await prisma.answerRecord.findMany({
+      where: { sessionId: v.gameSessionId }, select: { gained: true },
+    });
+    const rawScore = answers.reduce((s, a) => s + a.gained, 0);
+    const expected = Math.round(rawScore * 0.8);
+    // 结算功名 = 折后值
+    expect(last!.summary!.expGained).toBe(expected);
+    expect(last!.summary!.hintUsed).toBe(true);
+    // GameSession.score 落折后值（recentGames/功名簿取此口径）
+    const sess = await prisma.gameSession.findUnique({ where: { id: v.gameSessionId } });
+    expect(sess?.score).toBe(expected);
+    // 功名入账 = 折后值（新玩家 totalExp = expected，周奖 0）
+    expect(last!.summary!.totalExp).toBe(expected);
+  });
+
+  it("未用 hint 的局功名不折价（hintUsed=false）", async () => {
+    const pid = await makePlayer();
+    const v = await startRankedSession({ playerId: pid, kind: "PRACTICE" });
+    const rounds = await sessionRounds(v.gameSessionId);
+    let last: Awaited<ReturnType<typeof judgeRankedAnswer>>;
+    for (let i = 0; i < rounds.length; i++) {
+      last = await judgeRankedAnswer({ gameSessionId: v.gameSessionId, roundIndex: i, choice: rounds[i].answerIndex, timeMs: 500 });
+    }
+    const answers = await prisma.answerRecord.findMany({
+      where: { sessionId: v.gameSessionId }, select: { gained: true },
+    });
+    const rawScore = answers.reduce((s, a) => s + a.gained, 0);
+    expect(last!.summary!.hintUsed).toBe(false);
+    expect(last!.summary!.expGained).toBe(rawScore); // 不折价
+  });
+
+  it("resume 恢复灰置按 hintRoundIndex 套题（review A9）：hint 后答完该题 → resume 到下一题无灰置", async () => {
+    const pid = await makePlayer();
+    const v = await startRankedSession({ playerId: pid, kind: "PRACTICE" });
+    // hint 作用于第 1 题
+    await requestHint({ playerId: pid, gameSessionId: v.gameSessionId, roundIndex: 1 });
+    const sess0 = await prisma.gameSession.findUnique({ where: { id: v.gameSessionId } });
+    const removed0 = sess0?.hintRemoved as unknown as number[];
+    // 此时 resume：当前题=0（未答任何题），hint.roundIndex=1 ≠ 0 → 视图仍下发 hint（服务端不下发，靠 roundIndex 匹配）
+    const resA = await resumeRankedSession(pid);
+    expect(resA).not.toBeNull();
+    expect(resA!.hint?.roundIndex).toBe(1);
+    expect(resA!.hint?.removedIndexes).toEqual(removed0);
+    // 答完第 0、1 题（hint 套在第 1 题），继续到第 2 题
+    const rounds = await sessionRounds(v.gameSessionId);
+    await judgeRankedAnswer({ gameSessionId: v.gameSessionId, roundIndex: 0, choice: rounds[0].answerIndex, timeMs: 500 });
+    await judgeRankedAnswer({ gameSessionId: v.gameSessionId, roundIndex: 1, choice: rounds[1].answerIndex, timeMs: 500 });
+    // 重开（模拟刷新）→ resume 到第 2 题；hint.roundIndex=1 已被答过 → 客户端判定无灰置（视图 hint 仍含但 roundIndex≠currentIndex）
+    const resB = await resumeRankedSession(pid);
+    expect(resB).not.toBeNull();
+    expect(resB!.answeredIndexes).toContain(1);
+    // 关键：hint 作用于第 1 题，答完第 1 题后 resume 到第 2 题，灰置不得套到新题
+    // 视图层：hint 仍下发（服务端保留历史），但 roundIndex=1 ≠ 当前 currentIndex=2 → 客户端不渲染灰置
+    const currentIdx = resB!.answeredIndexes.length; // 首个未答 = answeredIndexes 数（0,1 已答）
+    expect(resB!.hint?.roundIndex ?? -1).not.toBe(currentIdx);
+  });
+
+  it("guess 每日幂等 +100 功名 + 猜 rankId+2 判据", async () => {
+    const pid = await makePlayer();
+    await grantExp(pid, 0);
+    await setRank(pid, 0); // 布衣 → 猜 RANKS[2]
+    const target = RANKS[2].label; // 秀才
+    const before = (await prisma.playerRank.findUnique({ where: { playerId: pid } }))!.totalExp;
+    // 猜中
+    const r1 = await submitRankGuess({ playerId: pid, guessLabel: target });
+    expect(r1.correct).toBe(true);
+    expect(r1.gained).toBe(GUESS_REWARD);
+    expect(r1.todayUsed).toBe(true);
+    const after1 = (await prisma.playerRank.findUnique({ where: { playerId: pid } }))!.totalExp;
+    expect(after1 - before).toBe(GUESS_REWARD);
+    // 当日幂等：二次提交返回原结果，不重复加功名
+    const r2 = await submitRankGuess({ playerId: pid, guessLabel: "不存在的称号" });
+    expect(r2.correct).toBe(true); // 返回首次结果（幂等键）
+    expect(r2.todayUsed).toBe(true);
+    const after2 = (await prisma.playerRank.findUnique({ where: { playerId: pid } }))!.totalExp;
+    expect(after2).toBe(after1); // 不重复加
+    // RankGuess 唯一键 1 行
+    const guesses = await prisma.rankGuess.findMany({ where: { playerId: pid } });
+    expect(guesses).toHaveLength(1);
+  });
+
+  it("guess 猜错不加功名（correct=false, gained=0）", async () => {
+    const pid = await makePlayer();
+    await setRank(pid, 1); // 童生 → 猜 RANKS[3] 举人
+    const wrong = RANKS[4].label; // 贡士（错误答案）
+    const before = (await prisma.playerRank.findUnique({ where: { playerId: pid } }))!.totalExp;
+    const r = await submitRankGuess({ playerId: pid, guessLabel: wrong });
+    expect(r.correct).toBe(false);
+    expect(r.gained).toBe(0);
+    const after = (await prisma.playerRank.findUnique({ where: { playerId: pid } }))!.totalExp;
+    expect(after).toBe(before);
+  });
+
+  it("guess rankId>=8 时 403 + GET 视图 guess=null（review A3）", async () => {
+    // 侍郎（rank 8）及以上 → 竞猜入口隐藏
+    for (const rank of [8, 9, 10]) {
+      const pid = await makePlayer();
+      await setRank(pid, rank);
+      await expect(
+        submitRankGuess({ playerId: pid, guessLabel: RANKS[0].label }),
+      ).rejects.toMatchObject({ status: 403 });
+      const view = await getRankView(pid);
+      expect(view.guess).toBeNull();
+    }
+  });
+
+  it("guess rankId<8 时 GET 视图 guess.done=false（未猜），猜后 done=true", async () => {
+    const pid = await makePlayer();
+    await setRank(pid, 3); // 举人 → 可猜
+    const v0 = await getRankView(pid);
+    expect(v0.guess).not.toBeNull();
+    expect(v0.guess!.done).toBe(false);
+    await submitRankGuess({ playerId: pid, guessLabel: RANKS[5].label }); // 进士（rank3+2）
+    const v1 = await getRankView(pid);
+    expect(v1.guess!.done).toBe(true);
   });
 });

@@ -61,6 +61,10 @@ interface RankGameStore {
   persona: PersonaKey | null;
   /** 开局白（D1：服务端按会话 id 哈希生成，同会话同句） */
   opening: string;
+  /** 问同窗灰置（D4 详设 §4.1，review A9）：仅当 roundIndex === currentIndex 时灰置 */
+  hint: { roundIndex: number; removedIndexes: number[] } | null;
+  /** 本局问同窗是否已用（D4：按钮置灰） */
+  hintUsed: boolean;
 
   reset: () => void;
   setError: (message: string) => void;
@@ -69,6 +73,10 @@ interface RankGameStore {
   resume: (view: RankedResumeView, rank: RankView | null) => void;
   reveal: (choice: number | null, judge: RankedJudgeView) => void;
   next: () => void;
+  /** 问同窗成功：记下灰置项 + 置已用（D4） */
+  applyHint: (hint: { roundIndex: number; removedIndexes: number[] }) => void;
+  /** 清问同窗灰置（翻题后：roundIndex 已不匹配 currentIndex，自然失效） */
+  clearHintIfPassed: () => void;
 }
 
 const initial = {
@@ -90,6 +98,8 @@ const initial = {
   lastSummary: null,
   persona: null as PersonaKey | null,
   opening: "",
+  hint: null as { roundIndex: number; removedIndexes: number[] } | null,
+  hintUsed: false,
 };
 
 export const useRankGameStore = create<RankGameStore>((set, get) => ({
@@ -118,6 +128,9 @@ export const useRankGameStore = create<RankGameStore>((set, get) => ({
     const answered = new Set(view.answeredIndexes);
     let index = 0;
     while (index < view.rounds.length && answered.has(index)) index += 1;
+    // review A9：hint 仅在 roundIndex 仍为当前未答题时有效；答过该题后自然失效
+    const hint =
+      view.hint && view.hint.roundIndex === index ? view.hint : null;
     set({
       ...initial,
       phase: "PLAYING",
@@ -132,6 +145,8 @@ export const useRankGameStore = create<RankGameStore>((set, get) => ({
       roundStartedAt: Date.now(),
       persona: view.persona,
       opening: view.opening,
+      hint,
+      hintUsed: view.hint !== null,
     });
   },
 
@@ -166,6 +181,16 @@ export const useRankGameStore = create<RankGameStore>((set, get) => ({
       selectedOption: null,
       lastJudge: null,
       roundStartedAt: Date.now(),
+      // 翻题：问同窗灰置自然失效（仅对出题时的 roundIndex 有效，review A9）
+      hint: null,
     });
+  },
+
+  applyHint: (hint) =>
+    set({ hint, hintUsed: true }),
+
+  clearHintIfPassed: () => {
+    const { hint, currentIndex } = get();
+    if (hint && hint.roundIndex !== currentIndex) set({ hint: null });
   },
 }));

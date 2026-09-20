@@ -51,6 +51,13 @@ import {
   type DailyView,
 } from "@/lib/games/poetry/weekly";
 import {
+  GUESS_REWARD,
+  guessTargetRank,
+  isGuessAvailable,
+  mulberry32,
+  pickHintRemoved,
+} from "@/lib/games/poetry/guess";
+import {
   PoetryRound,
   PoetryRoundView,
   RankKind,
@@ -141,6 +148,8 @@ export interface RankView {
   daily: DailyView;
   /** 语料总数（D3 诗词阁分母；D2 先行接入 `Poem.count()` 口径） */
   corpusTotal: number;
+  /** 剪影竞猜（D4 详设 §4.2）：rankId>=8 时 null（入口整体隐藏） */
+  guess: { done: boolean; correct?: boolean; gained?: number } | null;
 }
 
 /** 官阶开局视图 */
@@ -176,6 +185,8 @@ export interface RankSummary {
   settleLine: string;
   /** 本次新达成成就 key（D2；文案客户端查纯逻辑表 ACHIEVEMENTS 渲染） */
   newBadges: string[];
+  /** 本局用过问同窗（D4 详设 §4.1：功名已 ×0.8 折价，结算展示提示） */
+  hintUsed: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -615,6 +626,158 @@ export async function judgeRankedAnswer(
   };
 }
 
+/** 问同窗（D4 详设 §4.1）：一局一次，移除 2 个错误选项（不泄答案）。
+ *  原子抢占（hintUsed false→true 条件更新）；roundIndex 校验「当前未答轮次」。 */
+export interface HintInput {
+  playerId?: string;
+  gameSessionId?: string;
+  roundIndex?: number;
+}
+
+export interface HintView {
+  removedIndexes: number[];
+}
+
+/**
+ * 问同窗（D4 详设 §4.1）：
+ * - 一局一次：hintUsed false→true 条件更新原子抢占（并发双请求仅 1 成功，输家 409）；
+ * - 不泄答案：removedIndexes 全部 ≠ answerIndex（纯函数 pickHintRemoved 保证）；
+ * - 仅当前未答轮次有效：roundIndex 必须未答（已答 400 / 越界 400）；
+ * - 对局无效 404 / 已结束 410 / 已用过 409。
+ */
+export async function requestHint(input: HintInput): Promise<HintView> {
+  const { playerId, gameSessionId, roundIndex } = input;
+  if (!playerId || !gameSessionId || typeof roundIndex !== "number") {
+    throw new ApiError(400, "参数不完整");
+  }
+  const useDb = await isDbAvailable();
+  if (!useDb) throw new ApiError(503, "DB_UNAVAILABLE：官阶模式需要数据库");
+
+  const session = await prisma.gameSession.findUnique({
+    where: { id: gameSessionId },
+    include: { answers: { select: { roundIndex: true } } },
+  });
+  if (!session || session.mode !== "POETRY" || session.kind !== "RANKED") {
+    throw new ApiError(404, "对局不存在");
+  }
+  if (session.playerId !== playerId) {
+    throw new ApiError(403, "无权操作该对局");
+  }
+  if (session.status !== "ACTIVE") throw new ApiError(410, "对局已结束");
+  if (session.expiresAt.getTime() < Date.now()) {
+    await prisma.gameSession.update({
+      where: { id: gameSessionId },
+      data: { status: "EXPIRED" },
+    });
+    throw new ApiError(410, "对局已超时");
+  }
+  if (roundIndex < 0 || roundIndex >= session.roundCount) {
+    throw new ApiError(400, "轮次越界");
+  }
+  if (session.answers.some((a) => a.roundIndex === roundIndex)) {
+    throw new ApiError(400, "该题已作答");
+  }
+  if (session.hintUsed) throw new ApiError(409, "本局已用过提示");
+
+  const rounds = session.rounds as unknown as PoetryRound[];
+  const round = rounds[roundIndex];
+  // 被移除索引由服务端确定性 PRNG 产出；恒 2 个错误选项（纯函数合规校验见单测）
+  const removedIndexes = pickHintRemoved(
+    round.answerIndex,
+    round.options.length,
+    mulberry32(Date.now() % 2 ** 31),
+  );
+  // 原子抢占：hintUsed false→true（并发双请求仅 1 成功，输家 409）
+  const claimed = await prisma.gameSession.updateMany({
+    where: { id: gameSessionId, hintUsed: false },
+    data: {
+      hintUsed: true,
+      hintRoundIndex: roundIndex,
+      hintRemoved: removedIndexes as unknown as object[],
+    },
+  });
+  if (claimed.count === 0) throw new ApiError(409, "本局已用过提示");
+  return { removedIndexes };
+}
+
+/* ------------------------------------------------------------------ */
+/* 剪影竞猜（D4 详设 §4.2）                                              */
+/* ------------------------------------------------------------------ */
+
+export interface GuessInput {
+  playerId?: string;
+  guessLabel?: string;
+}
+
+export interface GuessResultView {
+  correct: boolean;
+  gained: number;
+  /** 当日已猜（重复提交返回原结果） */
+  todayUsed: boolean;
+}
+
+/**
+ * 剪影竞猜（D4 详设 §4.2，review A3）：
+ * - 猜 rankId+2 迷雾阶称号（称号被 ？？？ 遮住——真正被隐藏的信息）；
+ * - rankId >= 8（侍郎及以上）时 403（入口整体隐藏，皇帝信息拜相前绝不外露）；
+ * - 每日 1 次（RankGuess 唯一键 playerId+date 幂等，重复提交返回原结果）；
+ * - 猜中 +100 功名（playerRank.update 累加；不走 0.8 折价）。
+ */
+export async function submitRankGuess(input: GuessInput): Promise<GuessResultView> {
+  const { playerId, guessLabel } = input;
+  if (!playerId || typeof playerId !== "string" || typeof guessLabel !== "string") {
+    throw new ApiError(400, "参数不完整");
+  }
+  const useDb = await isDbAvailable();
+  if (!useDb) throw new ApiError(503, "DB_UNAVAILABLE：剪影竞猜需要数据库");
+  const player = await prisma.player.findUnique({
+    where: { id: playerId },
+    include: { rank: true },
+  });
+  if (!player) throw new ApiError(404, "玩家不存在");
+  const rankId = player.rank?.rank ?? 0;
+  if (!isGuessAvailable(rankId)) {
+    throw new ApiError(403, "本官阶已无迷雾阶可猜");
+  }
+  const date = localDate();
+  const existing = await prisma.rankGuess.findUnique({
+    where: { playerId_date: { playerId, date } },
+  });
+  if (existing) {
+    return { correct: existing.correct, gained: existing.gained, todayUsed: true };
+  }
+  // 结算时刻读当前官阶判据（幂等：唯一键冲突 = 并发双提交，重查返回原结果）
+  const target = guessTargetRank(rankId);
+  if (!target) throw new ApiError(403, "本官阶已无迷雾阶可猜");
+  const correct = guessLabel === target.label;
+  const gained = correct ? GUESS_REWARD : 0;
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.rankGuess.create({
+        data: { playerId, date, guessLabel, correct, gained },
+      });
+      if (gained > 0) {
+        const row = await tx.playerRank.findUnique({ where: { playerId } });
+        const base = row?.totalExp ?? 0;
+        await tx.playerRank.update({
+          where: { playerId },
+          data: { totalExp: base + gained },
+        });
+      }
+    });
+  } catch (err) {
+    if (!isUniqueConflict(err)) throw err;
+    const race = await prisma.rankGuess.findUnique({
+      where: { playerId_date: { playerId, date } },
+    });
+    if (race) {
+      return { correct: race.correct, gained: race.gained, todayUsed: true };
+    }
+    throw err;
+  }
+  return { correct, gained, todayUsed: true };
+}
+
 interface SettleInput {
   gameSessionId: string;
   playerId: string;
@@ -697,6 +860,16 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
     }
     const clear = judgeClear(accuracy);
 
+    // 问同窗折价（D4 详设 §4.1，review B4）：hintUsed 时本局功名 ×0.8。
+    // 落库口径：GameSession.score 统一写折后值（= 实际入账功名），
+    // recentGames / 功名簿柱状图直接取 score，全站一个口径。
+    const sessHint = await tx.gameSession.findUnique({
+      where: { id: gameSessionId },
+      select: { hintUsed: true },
+    });
+    const hintUsed = sessHint?.hintUsed ?? false;
+    const expGained = hintUsed ? Math.round(sessionScore * 0.8) : sessionScore;
+
     // 诗词阁落库（D3：结算事务内对本局全部轮次幂等入阁，含最后一题；
     // 崩溃恢复场景下重放结算可补齐——非末题判题时已入阁，upsert 无副作用）
     const sess = await tx.gameSession.findUnique({
@@ -711,11 +884,11 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
       }
     }
 
-    // 会话总分落库（与结算原子；排行榜只统计学段局，此处仅为数据完整）
+    // 会话总分落库（与结算原子；score = 实际入账功名，review B4：hint 折后值）
     // accuracy 一并落库（D1 详设 §2.3 推荐口径：recentGames 展示直接取字段）
     await tx.gameSession.update({
       where: { id: gameSessionId },
-      data: { score: sessionScore, accuracy },
+      data: { score: expGained, accuracy },
     });
 
     // 每日题占位置已结算（详设 §2.1：DAILY 与 PRACTICE/EXAM 同通道结算，
@@ -736,7 +909,7 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
       });
     }
     const currentRank = rankRow.rank;
-    const totalExp = rankRow.totalExp + sessionScore;
+    const totalExp = rankRow.totalExp + expGained;
     await tx.playerRank.update({
       where: { playerId },
       data: { totalExp },
@@ -784,7 +957,7 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
       // 周奖功名计入本局实际入账（score = 实际入账功名，详设 §2.3 口径）
       await tx.gameSession.update({
         where: { id: gameSessionId },
-        data: { score: sessionScore + bonusExp },
+        data: { score: expGained + bonusExp },
       });
     }
 
@@ -821,14 +994,15 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
       totalRounds,
       accuracy,
       stars: clear.stars,
-      expGained: sessionScore,
+      expGained,
       totalExp,
+      hintUsed,
       promotion,
       newBadges,
       // 结算台词（D1，详设 §1.2：按 kind 与 promotion.promoted 三分支）
       settleLine:
         input.kind !== "EXAM"
-          ? practiceLine(sessionScore)
+          ? practiceLine(expGained)
           : promotion.promoted
             ? promotionLine(
                 personaFor("EXAM", input.rankId),
@@ -853,6 +1027,7 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
     rank: rankView,
     settleLine: result.settleLine,
     newBadges: result.newBadges,
+    hintUsed: result.hintUsed,
   };
 }
 
@@ -918,6 +1093,13 @@ async function buildRankView(playerId: string): Promise<RankView> {
   const rankId = row?.rank ?? 0;
   const totalExp = row?.totalExp ?? 0;
   const next = nextRank(rankId);
+  // 剪影竞猜（D4 详设 §4.2）：rankId>=8 时 null（入口整体隐藏，皇帝不外露）
+  const guess = isGuessAvailable(rankId)
+    ? await prisma.rankGuess.findUnique({
+        where: { playerId_date: { playerId, date: today } },
+        select: { correct: true, gained: true },
+      }).then((g) => (g ? { done: true, correct: g.correct, gained: g.gained } : { done: false }))
+    : null;
   return {
     rankId,
     label: RANKS[rankId].label,
@@ -943,6 +1125,7 @@ async function buildRankView(playerId: string): Promise<RankView> {
     badges: badgeRows.map((b) => b.key),
     daily,
     corpusTotal,
+    guess,
   };
 }
 
@@ -1113,6 +1296,8 @@ export interface RankedResumeView {
   /** 本局人设与开局白（D1：与 start 视图同口径，同会话同句） */
   persona: PersonaKey;
   opening: string;
+  /** 问同窗灰置（D4 详设 §4.1，review A9）：客户端仅当 roundIndex === currentIndex 时灰置，答过该题后自然失效 */
+  hint: { roundIndex: number; removedIndexes: number[] } | null;
 }
 
 /**
@@ -1150,5 +1335,12 @@ export async function resumeRankedSession(
     rounds: (session.rounds as unknown as PoetryRound[]).map(toRoundView),
     persona,
     opening: openingLine(persona, hashIdToSeed(session.id)),
+    hint:
+      session.hintUsed && session.hintRoundIndex !== null
+        ? {
+            roundIndex: session.hintRoundIndex,
+            removedIndexes: session.hintRemoved as unknown as number[],
+          }
+        : null,
   };
 }

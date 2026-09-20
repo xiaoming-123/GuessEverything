@@ -123,6 +123,12 @@ model GameSession {
   playerId  String?
   /// 结算一次性记账标记（playerId:kind 的幂等键，结算时 create 占位，重复结算即冲突）
   settleKey String?
+  /// 问同窗已用标记（D4 详设 §4.1：一局一次；结算功名 ×0.8）
+  hintUsed Boolean @default(false)
+  /// 提示作用于第几题（review A9：持久化，resume 按题恢复灰置）
+  hintRoundIndex Int?
+  /// 被移除的选项索引（2 个错误选项；客户端仅当 roundIndex 匹配时灰置）
+  hintRemoved Json @default("[]")
 
   answers AnswerRecord[]
   player  Player?        @relation(fields: [playerId], references: [id], onDelete: SetNull)
@@ -172,4 +178,22 @@ model PlayerPoem {
   @@unique([playerId, poemId])
   @@index([playerId, dynasty])
   @@index([playerId, poet])
+}
+
+/// 剪影竞猜（D4 详设 §4.2：一玩家一日一次；猜 rankId+2 迷雾阶称号）
+/// 无外键、只有 playerId 字符串——与 PlayerSeenKey/PlayerDaily 同风格（review B10）
+model RankGuess {
+  playerId   String
+  /// 服务端本地日期 YYYY-MM-DD（Asia/Shanghai）
+  date       String
+  /// 玩家选的称号（选项由前端从 RANKS 渲染，服务端不下发选项池）
+  guessLabel String
+  /// 是否猜中（= guessLabel === RANKS[rank+2].label，结算时刻读当前官阶）
+  correct    Boolean
+  /// 猜中授予的功名（+100；不走 0.8 折价——提示代价只作用对局）
+  gained     Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@unique([playerId, date])
+  @@index([playerId])
 }

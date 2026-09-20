@@ -15,6 +15,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { secureFetch } from "@/lib/crypto/secure-fetch";
 import { getRoundTimeMs } from "@/lib/games/timing";
+import { buildGuessOptions, isGuessAvailable } from "@/lib/games/poetry/guess";
 import type { RankKind } from "@/lib/games/poetry/types";
 import type {
   RankedJudgeView,
@@ -158,6 +159,56 @@ export default function PoetryRankPage() {
     onNext: s.next,
   });
 
+  // 剪影竞猜状态（D4 详设 §4.2）：本地记录当次点击结果，权威状态以 GET rank.guess 为准
+  const [guessResult, setGuessResult] = useState<{ correct: boolean; gained: number } | null>(null);
+  const [guessBusy, setGuessBusy] = useState(false);
+
+  // 问同窗（D4 详设 §4.1）：一局一次，移除 2 个错误选项（非 Hook 命名，避免 rules-of-hooks 误报）
+  const askHint = useCallback(async () => {
+    const st = useRankGameStore.getState();
+    if (st.phase !== "PLAYING" || !st.gameSessionId || st.hintUsed) return;
+    try {
+      const res = await secureFetch<{ removedIndexes: number[] }>(
+        "/api/games/poetry/rank/hint",
+        {
+          playerId: usePlayerStore.getState().playerId ?? localPlayerId(),
+          gameSessionId: st.gameSessionId,
+          roundIndex: st.currentIndex,
+        },
+      );
+      useRankGameStore.getState().applyHint({
+        roundIndex: st.currentIndex,
+        removedIndexes: res.removedIndexes,
+      });
+    } catch {
+      /* 已用过 / 超时：忽略（按钮已置灰） */
+    }
+  }, []);
+
+  // 剪影竞猜提交（猜 rankId+2 迷雾阶称号）
+  const submitGuess = useCallback(
+    async (label: string) => {
+      if (rank?.guess?.done || guessBusy) return;
+      const pid = usePlayerStore.getState().playerId ?? localPlayerId();
+      if (!pid) return;
+      setGuessBusy(true);
+      try {
+        const res = await secureFetch<{ correct: boolean; gained: number; todayUsed: boolean }>(
+          "/api/games/poetry/rank/guess",
+          { playerId: pid, guessLabel: label },
+        );
+        setGuessResult({ correct: res.correct, gained: res.gained });
+        void loadRank(); // 刷新 rank.guess 权威态
+      } catch {
+        /* 403 无迷雾阶 / 网络失败：忽略 */
+      } finally {
+        setGuessBusy(false);
+      }
+    },
+    [rank?.guess?.done, guessBusy, loadRank],
+  );
+
+
   // 结算后刷新官阶视图（功名条回主页展示最新值）
   useEffect(() => {
     if (s.phase === "FINISHED" && s.lastSummary) {
@@ -222,6 +273,57 @@ export default function PoetryRankPage() {
               <div className="mt-4">
                 <RankRoad rank={rank} />
               </div>
+
+              {/* 剪影竞猜（D4 详设 §4.2）：猜 rankId+2 迷雾阶称号，每日 1 次 +100。
+                  rankId>=8（侍郎及以上）时入口整体隐藏（服务端 guess=null + 前端不渲染）。 */}
+              {rank.guess !== null && isGuessAvailable(rank.rankId) && (() => {
+                const seed = (rank.rankId + 1) * 7919;
+                const opts = buildGuessOptions(rank.rankId, seed);
+                const done = rank.guess.done;
+                const showResult = done || guessResult !== null;
+                const resCorrect = done ? rank.guess.correct : guessResult?.correct;
+                const resGained = done ? rank.guess.gained ?? 0 : guessResult?.gained ?? 0;
+                return (
+                  <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                    <p className="mb-1 text-sm font-bold text-amber-700">
+                      🔮 剪影竞猜：猜猜再下一阶（迷雾阶）的官衔？
+                    </p>
+                    <p className="mb-3 text-xs text-amber-600/80">
+                      每日 1 次 · 猜中 +100 功名
+                    </p>
+                    {opts && (
+                      <div className="grid grid-cols-2 gap-2">
+                        {opts.options.map((label, i) => {
+                          const isAnswer = showResult && label === opts.answerLabel;
+                          let cls = "border-amber-200 bg-white text-amber-700 active:scale-[0.98]";
+                          if (done) cls = "border-amber-200 bg-white text-amber-500";
+                          if (showResult && isAnswer) cls = "border-emerald-500 bg-emerald-50 font-bold text-emerald-700";
+                          return (
+                            <button
+                              key={i}
+                              type="button"
+                              disabled={done || guessBusy}
+                              onClick={() => void submitGuess(label)}
+                              className={`rounded-xl border px-3 py-2 text-sm font-bold transition ${cls}`}
+                            >
+                              {label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {showResult && (
+                      <p className="mt-3 text-sm font-bold">
+                        {resCorrect ? (
+                          <span className="text-emerald-600">✅ 猜中了！+{resGained} 功名</span>
+                        ) : (
+                          <span className="text-zinc-500">未中（明日再试）</span>
+                        )}
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
 
               <div className="mt-6 grid gap-3">
                 <button
@@ -367,8 +469,31 @@ export default function PoetryRankPage() {
                 locked={s.submitting}
                 theme="indigo"
                 onChoose={(i) => void answer(i)}
+                removedIndexes={
+                  s.hint && s.hint.roundIndex === s.currentIndex
+                    ? s.hint.removedIndexes
+                    : undefined
+                }
               />
             </div>
+
+            {/* 问同窗（D4 详设 §4.1）：一局一次，移除 2 个错误选项（不泄答案） */}
+            {s.phase === "PLAYING" && (
+              <button
+                type="button"
+                onClick={() => void askHint()}
+                disabled={s.hintUsed || s.submitting}
+                className={
+                  s.hintUsed
+                    ? "mt-3 w-full rounded-xl border border-zinc-200 bg-zinc-50 py-2 text-sm text-zinc-400"
+                    : "mt-3 w-full rounded-xl border border-indigo-200 bg-white py-2 text-sm font-bold text-indigo-600 active:scale-[0.99]"
+                }
+              >
+                {s.hintUsed
+                  ? "💡 已问过同窗（本局功名 ×0.8）"
+                  : "💡 问同窗（移除 2 个错误选项 · 本局功名 ×0.8）"}
+              </button>
+            )}
 
             {s.phase === "REVEAL" && s.lastJudge && s.persona && (
               <div className="animate-reveal-in mt-4">
