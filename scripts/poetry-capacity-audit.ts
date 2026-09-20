@@ -2,7 +2,7 @@
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { distinctFacesByGrade, simulatePath, totalDistinctFaces } from "../src/lib/games/poetry/capacity";
-import { buildRankedRounds, faceKey, rankedRoundPool } from "../src/lib/games/poetry/engine";
+import { buildRankedRounds, rankedRoundPool, roundFaceKey } from "../src/lib/games/poetry/engine";
 import { RANKS } from "../src/lib/games/poetry/rank";
 import { computeScore } from "../src/lib/games/poetry/score";
 import type { PoemCorpusItem, RankKind } from "../src/lib/games/poetry/types";
@@ -36,11 +36,9 @@ function replay(accuracy: number, seed: number, failures: number) {
         "：剩余 " + result.available + "/" + result.required;
       for (const round of result.rounds) {
         keys.push(round.sourceKey);
-        const parts = round.sourceKey.split(":");
-        parts.pop();
-        const index = Number(parts.pop());
-        const poem = corpus.find((p) => p.id === parts.join(":"))!;
-        faces.push(faceKey(poem, index, round.type));
+        // 由 round 直接重构题面（review A4-2 同口径）：四段 FILL_CHAR key
+        // 不能再按 sourceKey 反解析（Number("FILL_CHAR")→NaN），用 roundFaceKey 免此坑。
+        faces.push(roundFaceKey(round));
       }
       games++;
       used += result.rounds.length;
@@ -63,6 +61,7 @@ w("# 诗词升官：修正后的题库容量审计");
 w("\n生成时间：" + new Date().toISOString() + "。由 scripts/poetry-capacity-audit.ts 生成。");
 w("\n## 统计边界与假设\n");
 w("- 当前种子 " + corpus.length + " 首，理论题面并集 " + totalFaces + " 道；理论题面没有过滤干扰项，不等于实际可出题量。");
+w("- **D3 新题型口径**：FILL_CHAR（选字填空）题面含「挖字位 pos」维度（每 CJK 字位一道独立题面，四段 key），DYNASTY_PICK（朝代配对）按句位计。理论题面总数因此随挖字位展开而增大，与 D3 之前的旧口径（仅 3 基础题型）**不可直接对比**。");
 w("- 可用池调用正式 rankedRoundPool，必须四个唯一且同类型的选项，按正式局内题干规则去重。表中是种子 1 的单次候选池，不是永久容量保证。不同题型共用题干时，一局只选其中一个，其他题型可能在后续局出现。");
 w("- 晋升 EXAM 的 rankId 指目标官阶；研习指当前官阶。皇帝考试十五题。");
 w("- 功名估算将答对题连续放在前面，且每题五秒以内：这是给定正确率下的乐观连击排列，不是典型用户数据。");

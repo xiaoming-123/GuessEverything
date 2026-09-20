@@ -21,12 +21,14 @@ const poem = (id: string, grade: number, prefix: string, poet = "李白"): PoemC
 });
 
 describe("distinctFacesByGrade / totalDistinctFaces", () => {
-  it("每首诗贡献「句位数 × 3 题型」个题面，按 grade 归档", () => {
+  it("每首诗贡献「基础 3 题型 + D3 新题型」个题面，按 grade 归档", () => {
+    // fourLines 合成句（prefix 1 字 + 「句」+ 数字）每句仅 1 个 CJK 字 → FILL_CHAR 单字句跳过，
+    // 故每诗 = 3 句位 × (3 基础题型 + 1 DYNASTY_PICK) = 12 题面（D3 新口径，详设 §3.2）。
     const corpus = [poem("x", 1, "a"), poem("y", 12, "b")];
     const byGrade = distinctFacesByGrade(corpus);
-    expect(byGrade.get(1)).toBe(9); // 4 句 → 3 句位 × 3 题型
-    expect(byGrade.get(12)).toBe(9);
-    expect(totalDistinctFaces(corpus)).toBe(18);
+    expect(byGrade.get(1)).toBe(12); // 3 句位 × 4 型
+    expect(byGrade.get(12)).toBe(12);
+    expect(totalDistinctFaces(corpus)).toBe(24);
   });
 
   it("同题面（逐字相同、不同 id/grade）：全库并集 < 各档之和", () => {
@@ -37,17 +39,23 @@ describe("distinctFacesByGrade / totalDistinctFaces", () => {
       { id: "p2", title: "登高", poet: "杜甫", dynasty: "唐", grade: 2, lines: sameLines, famous: false },
     ];
     const byGrade = distinctFacesByGrade(corpus);
-    expect(byGrade.get(1)).toBe(9);
-    expect(byGrade.get(2)).toBe(9);
-    // faceKey 不含 grade/ id，两首同题面 → 并集只算 9
-    expect(totalDistinctFaces(corpus)).toBe(9);
+    expect(byGrade.get(1)).toBe(12);
+    expect(byGrade.get(2)).toBe(12);
+    // faceKey 不含 grade / id，两首同题面 → 并集只算 12
+    expect(totalDistinctFaces(corpus)).toBe(12);
     expect(totalDistinctFaces(corpus)).toBeLessThan((byGrade.get(1) ?? 0) + (byGrade.get(2) ?? 0));
   });
 
   it("同一首诗不同句位 / 题型算不同题面（不把严格去重暗改为同诗永不出现）", () => {
     const corpus = [poem("a", 1, "k")];
-    // 单首 4 句 → 9 个不同题面（3 句位 × 3 题型）
-    expect(totalDistinctFaces(corpus)).toBe(9);
+    // 单首 4 句 → 12 个不同题面（3 句位 × (3 基础题型 + DYNASTY_PICK)；合成句 <2 CJK 故 FILL_CHAR 不出）
+    expect(totalDistinctFaces(corpus)).toBe(12);
+    // 真实 5 字 CJK 句：FILL_CHAR 按挖字位展开 → 9 基础 + 3 朝代 + 15 挖字 = 27
+    const real: PoemCorpusItem = {
+      id: "jys", title: "静夜思", poet: "李白", dynasty: "唐", grade: 1, famous: true,
+      lines: ["床前明月光", "疑是地上霜", "举头望明月", "低头思故乡"],
+    };
+    expect(totalDistinctFaces([real])).toBe(27);
   });
 });
 

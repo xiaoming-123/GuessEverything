@@ -154,3 +154,22 @@ model AnswerRecord {
   @@unique([sessionId, roundIndex])
   @@index([sessionId])
 }
+
+/// 诗词阁（D3 详设 §3.1）：玩家答过的诗，按 poemId 去重，答过即入库（不论对错）
+/// 与 PlayerSeenKey 是两个维度：阁按「诗」去重（收集进度），SeenKey 按「素材」去重（防重出）
+model PlayerPoem {
+  playerId String
+  /// 语料 Poem.id（= sourceKey 第一段，judge 落库点由 sourceKey 还原，详设 §3.1）
+  poemId   String
+  title    String
+  poet     String
+  dynasty  String
+  grade    Int
+  /// 该诗在阁内首次答对过（展示「已通」标记；仅当本题 correct 且未 mastered 时置 true）
+  mastered   Boolean  @default(false)
+  seenAt     DateTime @default(now())
+
+  @@unique([playerId, poemId])
+  @@index([playerId, dynasty])
+  @@index([playerId, poet])
+}

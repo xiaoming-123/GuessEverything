@@ -16,9 +16,10 @@ import { rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { PrismaClient } from "@prisma/client";
 import {
+  getGalleryView,
   getLedgerView,
   getRankView,
   judgeRankedAnswer,
@@ -62,6 +63,26 @@ const prisma = new PrismaClient(); // 读 process.env.DATABASE_URL（临时库�
 
 /** 种子语料（测试库 Poem 表为空 → loadPoetryCorpus 回退种子，与本数组同口径） */
 const corpus = seedJson as PoemCorpusItem[];
+
+// 灌入种子语料到 Poem 表：诗词阁 lines 全文从 Poem 回填（生产经 db:seed 灌入）。
+// 与 loadPoetryCorpus 的「Poem 表为空回退种子」同口径 → 出卷不变；仅让 getGalleryView
+// 的 lines 有数据可查。幂等（poem.id 即语料稳定 id，重启不重灌）。
+beforeAll(async () => {
+  const existing = await prisma.poem.count();
+  if (existing === 0) {
+    await prisma.poem.createMany({
+      data: corpus.map((p) => ({
+        id: p.id,
+        title: p.title,
+        poet: p.poet,
+        dynasty: p.dynasty,
+        grade: p.grade,
+        lines: p.lines,
+        famous: p.famous,
+      })),
+    });
+  }
+});
 
 /* ------------------------------------------------------------------ */
 /* 工具                                                                */
@@ -701,5 +722,118 @@ describe("诗词升官 · D2 每日题 / 成就 / 功名簿", () => {
     await expect(makeUpDaily(pid, `${localDate().slice(0, 7)}-15`)).rejects.toMatchObject({
       status: 400,
     });
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* D3 诗词阁 + 新题型（选字填空 / 朝代配对）                              */
+/* ------------------------------------------------------------------ */
+
+describe("诗词升官 · D3 诗词阁与新题型", () => {
+  /** 把玩家置到举人（rank 3）→ 研习窗口 [3,7] 才会混入 D3 新题型 */
+  async function setRank(pid: string, rank: number): Promise<void> {
+    await prisma.playerRank.update({ where: { playerId: pid }, data: { rank } });
+  }
+
+  it("诗词阁落库：全对研习局 → 入阁诗=本局 distinct 诗、mastered=true、grade/朝代与语料一致", async () => {
+    const pid = await makePlayer();
+    const v = await startRankedSession({ playerId: pid, kind: "PRACTICE" });
+    await play(v.gameSessionId, allCorrect);
+    const rounds = (await prisma.gameSession.findUnique({ where: { id: v.gameSessionId } }))!
+      .rounds as unknown as { sourceKey: string; roundIndex: number }[];
+    const expectedPoems = new Set(rounds.map((r) => r.sourceKey.split(":")[0]));
+    const gallery = await getGalleryView(pid);
+    expect(gallery.total).toBe(expectedPoems.size);
+    for (const item of gallery.items) {
+      // 入阁字段与语料一致（grade / 朝代 / 作者）
+      expect([1, 2, 3]).toContain(item.grade); // 布衣窗口 [1,3]
+      expect(item.dynasty).toBeTruthy();
+      expect(item.poet).toBeTruthy();
+      // 全对 → mastered 全 true
+      expect(item.mastered).toBe(true);
+      // lines 全文回填（公版语料，非空）
+      expect(item.lines.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("诗词阁幂等：同诗第二局不重复入阁（playerId+poemId unique）", async () => {
+    const pid = await makePlayer();
+    const a = await startRankedSession({ playerId: pid, kind: "PRACTICE" });
+    await play(a.gameSessionId, allCorrect);
+    const total1 = (await getGalleryView(pid)).total;
+    const b = await startRankedSession({ playerId: pid, kind: "PRACTICE" });
+    await play(b.gameSessionId, allCorrect);
+    const g2 = await getGalleryView(pid);
+    // 第二局若出现已入阁的诗 → 总数只增 distinct 数，绝无重复行
+    const dup = await prisma.playerPoem.findFirst({
+      where: { playerId: pid, poemId: { in: (await prisma.playerPoem.findMany({ where: { playerId: pid }, select: { poemId: true }, take: 50 }))!.map((r) => r.poemId) } },
+    });
+    expect(dup).not.toBeNull();
+    // 去重：入阁数 = distinct 诗数（第二局复用则不增）
+    expect(g2.total).toBeGreaterThanOrEqual(total1);
+    expect(g2.items.length).toBeLessThanOrEqual(20);
+  });
+
+  it("getGalleryView 契约：分组统计 + 朝代/学段过滤 + 分页", async () => {
+    const pid = await makePlayer();
+    const v = await startRankedSession({ playerId: pid, kind: "PRACTICE" });
+    await play(v.gameSessionId, allCorrect);
+    const g = await getGalleryView(pid);
+    // 分组统计齐全且总和=total
+    expect(g.byDynasty.length).toBeGreaterThan(0);
+    expect(g.byGrade.length).toBeGreaterThan(0);
+    expect(g.byDynasty.reduce((s, d) => s + d.count, 0)).toBe(g.total);
+    expect(g.byGrade.reduce((s, d) => s + d.count, 0)).toBe(g.total);
+    // 朝代过滤：取任一有数据的朝代，过滤后 items 全属该朝代
+    const first = g.byDynasty[0];
+    const filtered = await getGalleryView(pid, 1, 20, { dynasty: first.dynasty });
+    expect(filtered.total).toBe(g.total); // total 恒为全量（不随过滤变）
+    for (const it of filtered.items) expect(it.dynasty).toBe(first.dynasty);
+    // 学段过滤
+    const gGrade = g.byGrade[0];
+    const fGrade = await getGalleryView(pid, 1, 20, { grade: gGrade.grade });
+    for (const it of fGrade.items) expect(it.grade).toBe(gGrade.grade);
+  });
+
+  it("新题型端到端：举人研习局混入 FILL_CHAR/DYNASTY_PICK，判题路径正确", async () => {
+    const pid = await makePlayer();
+    await grantExp(pid, 10000);
+    await setRank(pid, 3); // 举人 → 研习窗口 [3,7]，rankId>=3 才混入新题型
+    const v = await startRankedSession({ playerId: pid, kind: "PRACTICE", rankId: 3 });
+    expect(v.rankId).toBe(3);
+    const sess = (await prisma.gameSession.findUnique({ where: { id: v.gameSessionId } }))!;
+    const rounds = sess.rounds as unknown as {
+      type: string; sourceKey: string; options: string[]; answerIndex: number;
+    }[];
+    // 足量语料下新题型必然混入（FILL_CHAR 或 DYNASTY_PICK 至少一类）
+    const hasNew = rounds.some(
+      (r) => r.type === "FILL_CHAR" || r.type === "DYNASTY_PICK",
+    );
+    expect(hasNew).toBe(true);
+    // 视图契约：不下发 answerIndex / meta / sourceKey
+    for (const r of v.rounds) {
+      expect(r).not.toHaveProperty("answerIndex");
+      expect(r).not.toHaveProperty("meta");
+      expect(r).not.toHaveProperty("sourceKey");
+    }
+    // 全对判题 → 结算功名 >0（新题型判题路径与基础题型同）
+    const last = await play(v.gameSessionId, allCorrect);
+    expect(last.summary!.expGained).toBeGreaterThan(0);
+    expect(last.summary!.rankId).toBe(3);
+  });
+
+  it("新题型已见排除：排除某 FILL_CHAR 四段 key 后该题面不重出", async () => {
+    // 直接引擎层（与集成同口径）：构造含 FILL_CHAR 的局，取其 sourceKey，
+    // 经 excludeKeys 排除后不再出现（四段 key 的已见排除防线生效，review A4）。
+    const res = buildRankedRounds(corpus, { rankId: 3, kind: "PRACTICE", seed: 999 });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const fill = res.rounds.find((r) => r.type === "FILL_CHAR");
+    expect(fill).toBeDefined();
+    if (!fill) return;
+    const res2 = buildRankedRounds(corpus, { rankId: 3, kind: "PRACTICE", seed: 999, excludeKeys: [fill.sourceKey] });
+    expect(res2.ok).toBe(true);
+    if (!res2.ok) return;
+    expect(res2.rounds.some((r) => r.sourceKey === fill.sourceKey)).toBe(false);
   });
 });

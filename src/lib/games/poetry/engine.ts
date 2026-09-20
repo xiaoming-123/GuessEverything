@@ -7,6 +7,9 @@
 
 import {
   mulberry32,
+  charDistractorPool,
+  dynastyDistractorPool,
+  fillCharPositions,
   nextLineDistractorPool,
   pickDistractors,
   poetDistractorPool,
@@ -47,13 +50,26 @@ export function pickQuote(item: PoemCorpusItem, lineIndex: number): string {
   return b !== undefined ? `${a}${joiner}${b}` : a;
 }
 
-/** 素材稳定 key：诗 + 句位 + 题型（同一「知识点」的稳定标识） */
+/**
+ * 素材稳定 key：诗 + 句位 + 题型（同一「知识点」的稳定标识）。
+ * FILL_CHAR 追加挖字位 pos（四段格式 poemId:lineIndex:FILL_CHAR:pos）——
+ * 同句不同挖字位是两个不同素材（防互斥）；其余题型三段格式不变。
+ */
 export function materialKey(
   item: PoemCorpusItem,
   lineIndex: number,
   type: PoetryQuestionType,
+  pos?: number,
 ): string {
+  if (type === PoetryQuestionType.FILL_CHAR && pos !== undefined) {
+    return `${item.id}:${lineIndex}:${type}:${pos}`;
+  }
   return `${item.id}:${lineIndex}:${type}`;
+}
+
+/** FILL_CHAR 挖字 prompt：line 第 pos 字替换为「□」（保留原句其余文字） */
+export function fillCharPrompt(line: string, pos: number): string {
+  return `${line.slice(0, pos)}□${line.slice(pos + 1)}`;
 }
 
 /**
@@ -64,6 +80,9 @@ export function materialKey(
  * 它们的**题面**（prompt + options 素材）实际是同一道题，应视为重复。
  * faceKey 用「题干 + 正确答案」归一化题面，跨不同 poemId 也能识别同题面重复。
  *
+ * FILL_CHAR（review A4-3）：prompt 含挖字位 pos（□ 位置不同即不同题面），
+ * correct = 被挖字，显式入 key 保证与 materialKey 同粒度；其余题型忽略 pos。
+ *
  * 注意：整首诗可在不同知识点（不同 lineIndex / 题型）再出现——
  * 这是「同诗不同题」，不算重复；严格去重的粒度是「素材 key + 题面」，
  * 不是「同诗永不出现」。
@@ -72,23 +91,55 @@ export function faceKey(
   item: PoemCorpusItem,
   lineIndex: number,
   type: PoetryQuestionType,
+  pos?: number,
 ): string {
-  const prompt =
+  let prompt: string;
+  let correct: string;
+  if (type === PoetryQuestionType.FILL_CHAR) {
+    const p = pos ?? 0;
+    prompt = fillCharPrompt(item.lines[lineIndex], p);
+    correct = item.lines[lineIndex][p];
+    return `${type}|${prompt}|${correct}|${p}`;
+  }
+  prompt =
     type === PoetryQuestionType.COMPLETE_NEXT
       ? item.lines[lineIndex]
       : pickQuote(item, lineIndex);
-  const correct =
+  // DYNASTY_PICK 的正确答案是朝代（不是下一句！）——漏此分支会让 faceKey 的
+  // correct 段错成 lines[lineIndex+1]，已见排除对新题型静默失效。
+  correct =
     type === PoetryQuestionType.GUESS_POET
       ? item.poet
       : type === PoetryQuestionType.GUESS_TITLE
         ? item.title
-        : item.lines[lineIndex + 1];
+        : type === PoetryQuestionType.DYNASTY_PICK
+          ? item.dynasty
+          : item.lines[lineIndex + 1];
   return `${type}|${prompt}|${correct}`;
 }
 
 /**
- * 将「素材（item + lineIndex + type）+ 干扰项池 + 随机源」实例化为完整一轮。
+ * 由一局轮次（round）直接重构其题面 key（review A4-2 推荐路径）。
+ *
+ * 引擎 materializeRound 产出的 round.prompt 与 round.options[answerIndex]
+ * 本就与 faceKey 的 prompt/correct 逐字节相同（同一代码路径生成），
+ * FILL_CHAR 的 meta.pos 亦与 faceKey 的 pos 维度一致——故可直接由
+ * `type|prompt|correct[|pos]` 重构，无需反查语料、更无需"两处素材枚举
+ * 必须同口径"的隐式耦合。collectSeenKeys 落库已见题面时走本函数，
+ * 新题型（FILL_CHAR/DYNASTY_PICK）的已见题面排除天然生效。
+ */
+export function roundFaceKey(round: PoetryRound): string {
+  if (round.type === PoetryQuestionType.FILL_CHAR) {
+    const pos = round.meta.pos ?? 0;
+    return `${round.type}|${round.prompt}|${round.options[round.answerIndex]}|${pos}`;
+  }
+  return `${round.type}|${round.prompt}|${round.options[round.answerIndex]}`;
+}
+
+/**
+ * 将「素材（item + lineIndex + type [+ pos]）+ 干扰项池 + 随机源」实例化为完整一轮。
  * 引擎与容量审计共用此函数，保证「出卷时认为可出的题」与「审计统计的可出题」口径一致。
+ * FILL_CHAR 传 pos（挖字位）；其余题型 pos 忽略。
  */
 export function materializeRound(
   type: PoetryQuestionType,
@@ -98,8 +149,9 @@ export function materializeRound(
   roundIndex: number,
   rand: () => number,
   strictOptions = false,
+  pos?: number,
 ): PoetryRound {
-  const sourceKey = materialKey(item, lineIndex, type);
+  const sourceKey = materialKey(item, lineIndex, type, type === PoetryQuestionType.FILL_CHAR ? pos : undefined);
   let prompt: string;
   let correct: string;
   let distractorPool: string[];
@@ -121,6 +173,21 @@ export function materializeRound(
       prompt = item.lines[lineIndex];
       correct = item.lines[lineIndex + 1];
       distractorPool = nextLineDistractorPool(pool, item.id, [prompt, correct]);
+      break;
+    }
+    case PoetryQuestionType.FILL_CHAR: {
+      const p = pos ?? 0;
+      prompt = fillCharPrompt(item.lines[lineIndex], p);
+      correct = item.lines[lineIndex][p];
+      // 干扰字池 = 同诗其余 CJK 字 + 同朝代其他诗 CJK 字（去重、≠correct，取 3）
+      distractorPool = charDistractorPool(pool, item, correct);
+      break;
+    }
+    case PoetryQuestionType.DYNASTY_PICK: {
+      prompt = pickQuote(item, lineIndex);
+      correct = item.dynasty;
+      // 干扰朝代：语料内真实朝代频次降序 + 白名单补位（review A1）
+      distractorPool = dynastyDistractorPool(pool, item.dynasty);
       break;
     }
   }
@@ -155,9 +222,12 @@ export function materializeRound(
       poemTitle: item.title,
       poet: item.poet,
       dynasty: item.dynasty,
+      grade: item.grade,
+      lineIndex,
       ...(type === PoetryQuestionType.COMPLETE_NEXT
         ? { nextLine: item.lines[lineIndex + 1] }
         : {}),
+      ...(type === PoetryQuestionType.FILL_CHAR && pos !== undefined ? { pos } : {}),
     },
   };
 }
@@ -291,11 +361,15 @@ export function rankedRoundPool(
       .filter((v): v is string => v !== undefined)],
   );
 
-  // 枚举窗口内所有可出卷素材（每首诗每个合法句位 × 三种题型）
+  // 枚举窗口内所有可出卷素材（每首诗每个合法句位 × 3 基础题型 + D3 新题型）
+  // D3 题型混合（详设 §3.2 / review B9）：rankId < 3 仅基础 3 型（低阶不混入）；
+  // rankId >= 3 起 FILL_CHAR / DYNASTY_PICK 各按 30% 概率追加（seed 确定可复现）。
   type Material = {
     item: PoemCorpusItem;
     lineIndex: number;
     type: PoetryQuestionType;
+    /** FILL_CHAR 挖字位（素材枚举时 seed 确定性选定，保证引擎/审计/faceKey 三处同 pos） */
+    pos?: number;
   };
   const materials: Material[] = [];
   for (const item of scoped) {
@@ -303,14 +377,28 @@ export function rankedRoundPool(
       materials.push({ item, lineIndex: i, type: PoetryQuestionType.GUESS_POET });
       materials.push({ item, lineIndex: i, type: PoetryQuestionType.GUESS_TITLE });
       materials.push({ item, lineIndex: i, type: PoetryQuestionType.COMPLETE_NEXT });
+      if (rankId >= 3) {
+        if (rand() < 0.3) {
+          // DYNASTY_PICK：每句 1 个候选（选项 = 朝代名，无需 pos）
+          materials.push({ item, lineIndex: i, type: PoetryQuestionType.DYNASTY_PICK });
+        }
+        if (rand() < 0.3) {
+          // FILL_CHAR：每句 1 个候选，pos 确定性随机（CJK 字位，句中 CJK 字数 ≥ 2）
+          const positions = fillCharPositions(item.lines[i]);
+          if (positions.length > 0) {
+            const pos = positions[Math.floor(rand() * positions.length)];
+            materials.push({ item, lineIndex: i, type: PoetryQuestionType.FILL_CHAR, pos });
+          }
+        }
+      }
     }
   }
 
   // 过滤已见（素材 key 或 同题面）
   const fresh = materials.filter((m) => {
-    const k = materialKey(m.item, m.lineIndex, m.type);
+    const k = materialKey(m.item, m.lineIndex, m.type, m.pos);
     if (excludeSet.has(k)) return false;
-    if (excludeFaces.has(faceKey(m.item, m.lineIndex, m.type))) return false;
+    if (excludeFaces.has(faceKey(m.item, m.lineIndex, m.type, m.pos))) return false;
     return true;
   });
 
@@ -333,10 +421,11 @@ export function rankedRoundPool(
       rounds.length,
       rand,
       true,
+      m.type === PoetryQuestionType.FILL_CHAR ? m.pos : undefined,
     );
     if (round.answerIndex < 0 || round.options.length !== OPTION_COUNT ||
         new Set(round.options).size !== OPTION_COUNT) continue;
-    const face = faceKey(m.item, m.lineIndex, m.type);
+    const face = faceKey(m.item, m.lineIndex, m.type, m.pos);
     // 局内去重：同题面 / 同题干不重复出
     if (seenPrompts.has(round.prompt) || seenFaces.has(face)) continue;
     seenPrompts.add(round.prompt);
@@ -348,28 +437,55 @@ export function rankedRoundPool(
 }
 
 /**
- * 由素材 key（poemId:lineIndex:questionType）反查其在语料中的题面 key。
+ * 由素材 key 反查其在语料中的题面 key。
  * 用于把「已见素材 key」扩展为「已见题面」，防止换 poemId 绕过去重。
+ *
+ * 支持 D3 四段 FILL_CHAR key（poemId:lineIndex:FILL_CHAR:pos，review A4-1）：
+ * 末段纯数字且倒数第二段为 FILL_CHAR 时再 pop 一次取 pos。
+ * 题型白名单含 FILL_CHAR / DYNASTY_PICK——只改 materialKey 会让
+ * 四段 key pop 出 pos 当 type → NaN → return undefined → 已见 FILL_CHAR
+ * 的题面排除静默失效。
  */
-function faceKeyOfKey(
+export function faceKeyOfKey(
   corpus: PoemCorpusItem[],
   key: string,
 ): string | undefined {
   const parts = key.split(":");
-  const typeStr = parts.pop();
-  const lineStr = parts.pop();
-  const id = parts.join(":");
+  let typeStr: string;
+  let pos: number | undefined;
+  // 四段 FILL_CHAR（id:lineIndex:FILL_CHAR:pos，id 可含冒号 → 从尾部锚定解析）：
+  // 末段纯数字且倒数第二段为 FILL_CHAR 时，末段是 pos 而非 type。
+  if (
+    parts.length >= 4 &&
+    parts[parts.length - 2] === PoetryQuestionType.FILL_CHAR &&
+    /^\d+$/.test(parts[parts.length - 1])
+  ) {
+    pos = Number(parts[parts.length - 1]);
+    typeStr = parts[parts.length - 2];
+  } else {
+    typeStr = parts[parts.length - 1];
+  }
+  // lineIndex = type 前一段；id = lineIndex 之前的全部（可含冒号）
+  const lineOffset = parts.length - (pos !== undefined ? 3 : 2);
+  const lineStr = parts[lineOffset];
+  const id = parts.slice(0, lineOffset).join(":");
   const lineIndex = Number(lineStr);
   const item = corpus.find((p) => p.id === id);
   if (!item || !Number.isInteger(lineIndex)) return undefined;
   const type = typeStr as PoetryQuestionType;
-  if (
-    type !== PoetryQuestionType.GUESS_POET &&
-    type !== PoetryQuestionType.GUESS_TITLE &&
-    type !== PoetryQuestionType.COMPLETE_NEXT
-  ) {
+  const TYPES: string[] = [
+    PoetryQuestionType.GUESS_POET,
+    PoetryQuestionType.GUESS_TITLE,
+    PoetryQuestionType.COMPLETE_NEXT,
+    PoetryQuestionType.FILL_CHAR,
+    PoetryQuestionType.DYNASTY_PICK,
+  ];
+  if (!TYPES.includes(typeStr)) return undefined;
+  if (lineIndex < 0 || lineIndex >= item.lines.length) return undefined;
+  // COMPLETE_NEXT 需要下一句存在；FILL_CHAR / DYNASTY_PICK 只需本句合法
+  if (type === PoetryQuestionType.COMPLETE_NEXT && lineIndex + 1 >= item.lines.length) {
     return undefined;
   }
-  if (lineIndex < 0 || lineIndex + 1 >= item.lines.length) return undefined;
-  return faceKey(item, lineIndex, type);
+  if (type === PoetryQuestionType.FILL_CHAR && pos === undefined) return undefined;
+  return faceKey(item, lineIndex, type, pos);
 }

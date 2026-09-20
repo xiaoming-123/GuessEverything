@@ -14,6 +14,7 @@ import {
   type PoetryRound,
 } from "@/lib/games/poetry/types";
 import { RANKS } from "@/lib/games/poetry/rank";
+import { fillCharPositions } from "@/lib/games/poetry/distractors";
 
 /** 4 句诗素材构造器 */
 const P = (
@@ -147,18 +148,28 @@ describe("buildRankedRounds · 严格官阶出卷", () => {
   });
 
   it("同题面不可换 ID 绕过：排除 b0 后，逐字相同的 b1 也不出（faceKey 去重）", () => {
-    // b0 = corpus[4]，b1 = corpus[5]（逐字相同）。排除 b0 的**全部** 9 个素材（3 句位 × 3 题型），
-    // b1 的相同题面（faceKey）应被一并排除 → 窗口内可用 fresh 归 0。
-    const types = [
+    // b0 = corpus[4]，b1 = corpus[5]（逐字相同）。排除 b0 的**全部**题面：
+    //   · 3 基础题型 × 3 句位
+    //   · DYNASTY_PICK × 3 句位（朝代配对，无 pos 维度）
+    //   · FILL_CHAR × 3 句位 × 每 CJK 挖字位（pos 维度展开）
+    // b1 内容逐字相同 → b1 的全部题面 ⊆ b0 题面 → fresh 归 0。
+    // （只排除 3 基础题型会漏掉新题型 faceKey → 防线失效，正是 D3 要防的回归。）
+    const lineIdx = [0, 1, 2];
+    const baseTypes: PoetryQuestionType[] = [
       PoetryQuestionType.GUESS_POET,
       PoetryQuestionType.GUESS_TITLE,
       PoetryQuestionType.COMPLETE_NEXT,
-    ] as const;
+      PoetryQuestionType.DYNASTY_PICK,
+    ];
     const b0Keys: string[] = [];
-    for (let i = 0; i < 3; i++) {
-      for (const t of types) b0Keys.push(materialKey(corpus[4], i, t));
+    for (const i of lineIdx) {
+      for (const t of baseTypes) b0Keys.push(materialKey(corpus[4], i, t));
+      // FILL_CHAR：遍历句中每个 CJK 挖字位（《登高》每句 7 字全 CJK → 每句 7 位）
+      for (const pos of fillCharPositions(corpus[4].lines[i])) {
+        b0Keys.push(materialKey(corpus[4], i, PoetryQuestionType.FILL_CHAR, pos));
+      }
     }
-    expect(b0Keys.length).toBe(9);
+    expect(b0Keys.length).toBe(12 + 21); // 3 基础+朝代 × 3 句位 + 7 字 × 3 句位
     const res = buildRankedRounds(corpus, { rankId: 9, kind: "EXAM", seed: 13, excludeKeys: b0Keys });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.available).toBe(0);

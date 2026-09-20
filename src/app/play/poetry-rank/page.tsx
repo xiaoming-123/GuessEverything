@@ -275,6 +275,13 @@ export default function PoetryRankPage() {
                 >
                   🏮 功名簿（成就 · 月历 · 总览）
                 </Link>
+
+                <Link
+                  href="/play/poetry-rank/gallery"
+                  className="w-full rounded-2xl border border-emerald-200 bg-white py-3 text-center text-sm font-bold text-emerald-600 active:scale-[0.99]"
+                >
+                  📚 诗词阁（收集答过的诗）
+                </Link>
               </div>
 
               <p className="mt-4 text-center text-xs text-zinc-400">

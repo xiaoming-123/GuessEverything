@@ -18,17 +18,23 @@ import {
   PoetryQuestionType,
 } from "./types";
 import { faceKey } from "./engine";
+import { fillCharPositions } from "./distractors";
 import type { RankSpec } from "./rank";
 
 const ALL_TYPES: PoetryQuestionType[] = [
   PoetryQuestionType.GUESS_POET,
   PoetryQuestionType.GUESS_TITLE,
   PoetryQuestionType.COMPLETE_NEXT,
+  // D3 新题型（详设 §3.2 / review A2）：容量审计须计入，否则审计漏算导致
+  // 「以为够实际不够」
+  PoetryQuestionType.FILL_CHAR,
+  PoetryQuestionType.DYNASTY_PICK,
 ];
 
 /**
  * 每个 grade 档内「互不重复的题面」数量。
- * 同一首合法句位 × 三种题型各贡献一道；faceKey 相同（同题干同答案同题型）只算一道。
+ * 同一首合法句位 × 题型各贡献一道；faceKey 相同（同题干同答案同题型）只算一道。
+ * FILL_CHAR 按挖字位 pos 枚举（每 CJK 字位一道，review A2）；单字句跳过。
  * 注意：faceKey 不含 grade，理论上两首不同 grade 的诗若逐字相同会被分入不同档各记一次，
  * 审计报告以「全库题面并集」为准修正该极小边界（见 totalDistinctFaces）。
  */
@@ -38,7 +44,14 @@ export function distinctFacesByGrade(corpus: PoemCorpusItem[]): Map<number, numb
     for (let i = 0; i < item.lines.length - 1; i++) {
       for (const type of ALL_TYPES) {
         if (!perGrade.has(item.grade)) perGrade.set(item.grade, new Set());
-        perGrade.get(item.grade)!.add(faceKey(item, i, type));
+        const s = perGrade.get(item.grade)!;
+        if (type === PoetryQuestionType.FILL_CHAR) {
+          const positions = fillCharPositions(item.lines[i]);
+          if (positions.length === 0) continue;
+          for (const pos of positions) s.add(faceKey(item, i, type, pos));
+          continue;
+        }
+        s.add(faceKey(item, i, type));
       }
     }
   }
@@ -51,6 +64,12 @@ export function totalDistinctFaces(corpus: PoemCorpusItem[]): number {
   for (const item of corpus) {
     for (let i = 0; i < item.lines.length - 1; i++) {
       for (const type of ALL_TYPES) {
+        if (type === PoetryQuestionType.FILL_CHAR) {
+          const positions = fillCharPositions(item.lines[i]);
+          if (positions.length === 0) continue;
+          for (const pos of positions) all.add(faceKey(item, i, type, pos));
+          continue;
+        }
         all.add(faceKey(item, i, type));
       }
     }

@@ -24,7 +24,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { ApiError } from "@/lib/crypto/with-crypto";
-import { buildRankedRounds, faceKey } from "@/lib/games/poetry/engine";
+import { buildRankedRounds, roundFaceKey } from "@/lib/games/poetry/engine";
 import { computeScore } from "@/lib/games/poetry/score";
 import { evaluatePromotion, PromotionResult } from "@/lib/games/poetry/promote";
 import {
@@ -51,7 +51,6 @@ import {
   type DailyView,
 } from "@/lib/games/poetry/weekly";
 import {
-  PoetryQuestionType,
   PoetryRound,
   PoetryRoundView,
   RankKind,
@@ -308,7 +307,7 @@ export async function startRankedSession(
           );
         }
         const rounds = built.rounds;
-        const keys = collectSeenKeys(corpus, rounds);
+        const keys = collectSeenKeys(rounds);
         // 占用已见（幂等 createMany；并发冲突在此抛 P2002 → 换种子重试）
         if (keys.length > 0) {
           await tx.playerSeenKey.createMany({
@@ -377,30 +376,21 @@ function isUniqueConflict(err: unknown): boolean {
 }
 
 /**
- * 收集一局需占用的已见键：每轮的 sourceKey + 该轮素材的 faceKey。
+ * 收集一局需占用的已见键：每轮的 sourceKey + 该轮的 faceKey。
  * faceKey 一并落库 → 原素材被删除 / 换 ID 后同题面仍被排除（持久化题面身份）。
+ *
+ * review A4-2（D3）：不再反查语料 byKey 映射——faceKey 直接由 round 重构
+ * （roundFaceKey，round.prompt/options/answerIndex/meta.pos 与 faceKey 同口径，
+ * 同一代码路径生成）。这消除了「素材枚举必须与 faceKeyOfKey 口径一致」的
+ * 隐式耦合，且新题型（FILL_CHAR/DYNASTY_PICK 四段/新格式）的已见排除天然生效。
  */
 function collectSeenKeys(
-  corpus: { id: string; title: string; poet: string; dynasty: string; grade: number; lines: string[]; famous: boolean }[],
   rounds: PoetryRound[],
 ): string[] {
-  const byKey = new Map<string, { item: (typeof corpus)[number]; lineIndex: number; type: PoetryQuestionType }>();
-  for (const item of corpus) {
-    for (let i = 0; i < item.lines.length - 1; i++) {
-      for (const type of [
-        PoetryQuestionType.GUESS_POET,
-        PoetryQuestionType.GUESS_TITLE,
-        PoetryQuestionType.COMPLETE_NEXT,
-      ]) {
-        byKey.set(`${item.id}:${i}:${type}`, { item, lineIndex: i, type });
-      }
-    }
-  }
   const keys = new Set<string>();
   for (const r of rounds) {
     keys.add(r.sourceKey);
-    const m = byKey.get(r.sourceKey);
-    if (m) keys.add(faceKey(m.item, m.lineIndex, m.type));
+    keys.add(roundFaceKey(r));
   }
   return [...keys];
 }
@@ -408,6 +398,48 @@ function collectSeenKeys(
 /* ------------------------------------------------------------------ */
 /* 判题与一次性结算                                                     */
 /* ------------------------------------------------------------------ */
+
+/**
+ * 诗词阁落库（D3 详设 §3.1，幂等）：答过即入库（不论对错），按 poemId 去重。
+ * - poemId = sourceKey 第一段（sourceKey = poemId:lineIndex:type[:pos]，engine.ts 既有格式）；
+ * - title/poet/dynasty/grade 由 round.meta 还原（服务端专用字段）；
+ * - mastered 仅当本题 correct 且该诗未 mastered 时置 true（条件更新）。
+ * 判题非末题分支与结算事务内都调用（upsert 幂等，重复调用无副作用）。
+ */
+async function recordGallery(
+  tx: {
+    playerPoem: {
+      upsert(args: Parameters<typeof prisma.playerPoem.upsert>[0]): Promise<unknown>;
+      updateMany(args: Parameters<typeof prisma.playerPoem.updateMany>[0]): Promise<unknown>;
+    };
+  },
+  playerId: string,
+  round: PoetryRound,
+  correct: boolean,
+): Promise<void> {
+  const poemId = round.sourceKey.split(":")[0];
+  if (!poemId) return;
+  const { poemTitle, poet, dynasty, grade } = round.meta;
+  await tx.playerPoem.upsert({
+    where: { playerId_poemId: { playerId, poemId } },
+    create: {
+      playerId,
+      poemId,
+      title: poemTitle,
+      poet,
+      dynasty,
+      grade,
+      mastered: correct,
+    },
+    update: {},
+  });
+  if (correct) {
+    await tx.playerPoem.updateMany({
+      where: { playerId, poemId, mastered: false },
+      data: { mastered: true },
+    });
+  }
+}
 
 export interface RankedJudgeInput {
   gameSessionId: string;
@@ -540,6 +572,8 @@ export async function judgeRankedAnswer(
       where: { id: gameSessionId },
       data: { score: totalScore },
     });
+    // 诗词阁落库（D3：非末题每题即入阁；幂等 upsert）
+    if (playerId) await recordGallery(prisma, playerId, round, correct);
     return {
       correct,
       timeout,
@@ -662,6 +696,20 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
       if (run > maxCombo) maxCombo = run;
     }
     const clear = judgeClear(accuracy);
+
+    // 诗词阁落库（D3：结算事务内对本局全部轮次幂等入阁，含最后一题；
+    // 崩溃恢复场景下重放结算可补齐——非末题判题时已入阁，upsert 无副作用）
+    const sess = await tx.gameSession.findUnique({
+      where: { id: gameSessionId },
+      select: { rounds: true },
+    });
+    if (sess) {
+      const sessRounds = sess.rounds as unknown as PoetryRound[];
+      for (const r of sessRounds) {
+        const a = answers.find((x) => x.roundIndex === r.roundIndex);
+        if (a) await recordGallery(tx, playerId, r, a.correct);
+      }
+    }
 
     // 会话总分落库（与结算原子；排行榜只统计学段局，此处仅为数据完整）
     // accuracy 一并落库（D1 详设 §2.3 推荐口径：recentGames 展示直接取字段）
@@ -952,9 +1000,104 @@ export async function getLedgerView(playerId: string): Promise<LedgerView> {
 }
 
 /* ------------------------------------------------------------------ */
-/* 刷新恢复：取玩家未完成的官阶局                                        */
+/* 诗词阁（D3 详设 §3.1，GET 明文视图）                                  */
 /* ------------------------------------------------------------------ */
 
+/** 诗词阁视图（详设 §3.1 GalleryView） */
+export interface GalleryView {
+  /** 入阁诗数（按 poemId 去重） */
+  total: number;
+  /** 朝代分组（count 降序） */
+  byDynasty: Array<{ dynasty: string; count: number }>;
+  /** 学段分组（grade 升序） */
+  byGrade: Array<{ grade: number; count: number }>;
+  /** 分页诗卡（page 从 1，pageSize 默认 20；seenAt desc） */
+  items: Array<{
+    title: string;
+    poet: string;
+    dynasty: string;
+    grade: number;
+    mastered: boolean;
+    seenAt: string;
+    lines: string[];
+  }>;
+}
+
+/**
+ * 诗词阁视图：玩家答过的诗（答过即入库，不论对错）。
+ * lines 全文从 Poem 语料表回填（公版语料，明文可下发）。
+ */
+export async function getGalleryView(
+  playerId: string,
+  page: number = 1,
+  pageSize: number = 20,
+  opts: { dynasty?: string | null; grade?: number | null } = {},
+): Promise<GalleryView> {
+  const useDb = await isDbAvailable();
+  if (!useDb) throw new ApiError(503, "DB_UNAVAILABLE：诗词阁需要数据库");
+  if (!playerId || typeof playerId !== "string") throw new ApiError(400, "参数不完整");
+  const p = Math.max(1, Math.floor(page) || 1);
+  const ps = Math.min(100, Math.max(1, Math.floor(pageSize) || 20));
+  // 过滤条件（朝代 / 学段，仅作用于 items 分页；分组统计恒为全量）
+  const where: {
+    playerId: string;
+    dynasty?: string;
+    grade?: number;
+  } = { playerId };
+  if (opts.dynasty) where.dynasty = opts.dynasty;
+  if (opts.grade !== null && opts.grade !== undefined) where.grade = opts.grade;
+
+  const [total, dynastyRows, gradeRows, items] = await Promise.all([
+    // total = 全量入阁数（详设 §3.1：进度条分子，不随过滤变）；过滤只作用于 items
+    prisma.playerPoem.count({ where: { playerId } }),
+    prisma.playerPoem.groupBy({
+      by: ["dynasty"],
+      where: { playerId },
+      _count: { _all: true },
+      orderBy: { _count: { dynasty: "desc" } },
+    }),
+    prisma.playerPoem.groupBy({
+      by: ["grade"],
+      where: { playerId },
+      _count: { _all: true },
+      orderBy: { grade: "asc" },
+    }),
+    prisma.playerPoem.findMany({
+      where,
+      orderBy: { seenAt: "desc" },
+      skip: (p - 1) * ps,
+      take: ps,
+    }),
+  ]);
+  const poemIds = items.map((i) => i.poemId);
+  const poemRows = poemIds.length
+    ? await prisma.poem.findMany({
+        where: { id: { in: poemIds } },
+        select: { id: true, lines: true },
+      })
+    : [];
+  const linesByPoemId = new Map<string, string[]>(
+    poemRows.map((pm) => [pm.id, pm.lines as unknown as string[]]),
+  );
+  return {
+    total,
+    byDynasty: dynastyRows.map((r) => ({ dynasty: r.dynasty, count: r._count._all })),
+    byGrade: gradeRows.map((r) => ({ grade: r.grade, count: r._count._all })),
+    items: items.map((i) => ({
+      title: i.title,
+      poet: i.poet,
+      dynasty: i.dynasty,
+      grade: i.grade,
+      mastered: i.mastered,
+      seenAt: i.seenAt.toISOString(),
+      lines: linesByPoemId.get(i.poemId) ?? [],
+    })),
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* 刷新恢复：取玩家未完成的官阶局                                        */
+/* ------------------------------------------------------------------ */
 /** 可恢复的官阶局视图（刷新后继续作答） */
 export interface RankedResumeView {
   gameSessionId: string;

@@ -23,6 +23,10 @@ export enum PoetryQuestionType {
   GUESS_TITLE = "GUESS_TITLE",
   /** 上句补下句 */
   COMPLETE_NEXT = "COMPLETE_NEXT",
+  /** 选字填空：句中挖一字（□），4 个单字选项（D3 新题型） */
+  FILL_CHAR = "FILL_CHAR",
+  /** 朝代配对：一句名句，4 个朝代选项（D3 新题型） */
+  DYNASTY_PICK = "DYNASTY_PICK",
 }
 
 /** 语料条目（对应 Poem 表结构，供引擎消费） */
@@ -99,8 +103,14 @@ export interface PoetryRound {
     poemTitle: string;
     poet: string;
     dynasty: string;
+    /** 学段分级 1-12（D3：诗词阁落库用，服务端专用不下发） */
+    grade: number;
     /** 下句（仅补下句题型） */
     nextLine?: string;
+    /** 句位（D3：FILL_CHAR 落库 / faceKey 重构用，服务端专用不下发） */
+    lineIndex?: number;
+    /** 挖字位置（D3 FILL_CHAR 专用，服务端专用不下发） */
+    pos?: number;
   };
 }
 
