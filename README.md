@@ -23,7 +23,7 @@
 
 ## 本分支进行中（feature/poetry-rank）
 
-诗词升官已打通「纯逻辑 + 数据层 + 前端 + 浏览器验收」全链路（可玩）；智能体题库引擎纯逻辑与单测已完成，**前端界面未开放**：
+诗词升官已打通「纯逻辑 + 数据层 + 前端 + 浏览器验收」全链路（可玩）：
 
 **诗词升官**（诗词猜猜的晋升线：布衣 → 11 阶官衔 + 皇帝登极大考，架空称号路线）
 - 已完成：官阶体系 `rank.ts`、容量核算 `capacity.ts` + 审计脚本、晋级结算 `promote.ts`；
@@ -40,11 +40,6 @@
   真实浏览器验收 15/15（首次晋升 / 刷新恢复 / 移动布局 / 科考门禁）
 - 未开始：每日题（DAILY，服务端已拒绝，前端无入口）；语料批次 2（前置：可核验来源文本，
   g10–12 需补 ≥112 题面）；皇帝大考容量复验（待批次 2 后）
-
-**智能体题库引擎**（P0/P1 完成）
-- 已完成：`src/lib/question-bank/` 的 compose / review / publish 管线、结构化评审、
-  批次级幂等任务队列、崩溃恢复与回滚；题库单测 74/74、全量 241/241、隔离库端到端演示 9/9
-- 未开始：P2 真实采集（未启动）
 
 设计与审计文档见 [docs/design/](docs/design/)。
 
@@ -69,13 +64,12 @@ src/
     crypto/            # 加密层：protocol / keys / nonce / session-keys / with-crypto / secure-fetch
     games/<mode>/      # 纯逻辑层：engine / distractors / score / types（零依赖纯函数）
     games/poetry/      # 诗词升官（在建）：rank 官阶 / capacity 容量 / promote 晋级结算
-    question-bank/     # 智能体题库引擎：contracts / pipeline / validators / providers / infra
     db/                # Prisma 单例 + 仓储 + 会话服务（业务编排）
     data/              # 语料种子 JSON（诗词 48 首 + 候选审计）
   store/               # Zustand 客户端状态（每模式独立）
 tests/                 # 与 src 结构镜像的单测
 prisma/                # schema.prisma + 幂等种子脚本
-scripts/               # 审计与演示脚本（诗词容量 / 语料审计、题库端到端演示）
+scripts/               # 审计与演示脚本（诗词容量 / 语料审计）
 docs/                  # 设计、审计与调研报告
 ```
 
