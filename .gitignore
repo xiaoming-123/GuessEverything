@@ -46,3 +46,11 @@ prisma/data/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# research scratch（调研期网页抓取残留，含 cookie 等敏感数据）
+.research/
+.research_tmp/
+tw.json
+
+# 本地 agent 配置
+zcode.json

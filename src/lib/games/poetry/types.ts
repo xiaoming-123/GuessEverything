@@ -34,9 +34,14 @@ export interface PoemCorpusItem {
   grade: number;
   lines: string[];
   famous: boolean;
+  /**
+   * 冷门度 0-3（3 最冷）。可选：旧种子未标注时按 0 处理，
+   * 高阶官阶 `preferCold` 出卷时作为加权因子（不改变低阶行为）。
+   */
+  cold?: number;
 }
 
-/** 出题请求参数 */
+/** 出题请求参数（学段模式，旧接口，行为保持不变） */
 export interface BuildRoundsOptions {
   stage: PoetryStage;
   /** 轮次数，默认 10 */
@@ -46,6 +51,36 @@ export interface BuildRoundsOptions {
   /** 该玩家最近出过的素材 key（跨局防重复，优先出未见过的题） */
   excludeKeys?: string[];
 }
+
+/** 对局类型：PRACTICE 研习 / EXAM 科考（晋升大考）/ DAILY 每日题 */
+export type RankKind = "PRACTICE" | "EXAM" | "DAILY";
+
+/** 官阶严格出卷参数（诗词升官模式专用） */
+export interface RankBuildOptions {
+  /** 官阶 id（0..N），对应 rank.ts 的 RANKS */
+  rankId: number;
+  /** 类型决定取研习窗口还是科考窗口、以及题数（rank.ts countFor） */
+  kind: RankKind;
+  /** 随机种子（可复现对局，测试用） */
+  seed?: number;
+  /**
+   * 硬排除：这些素材 key（poemId:lineIndex:questionType）一律不得出现。
+   * **会试 / 科考 / 每日题一律严格排除**（review 红线：三种模式都不得重复已见题）。
+   * 同题面（faceKey）也会被一并排除，防止「换 ID 不改题面」绕过去重。
+   */
+  excludeKeys?: string[];
+  /** 持久化题面身份；原素材被删除或替换 ID 后仍须排除。 */
+  excludeFaces?: string[];
+}
+
+/**
+ * 官阶出卷结果（纯逻辑层专用）。
+ * 题量不足时返回 ok:false + 明确原因，由上层识别并「保留进度、等待扩容」，
+ * 绝不返回不足题数的正常试卷、不自动晋升、不借更高官阶题。
+ */
+export type RankedBuildResult =
+  | { ok: true; rounds: PoetryRound[] }
+  | { ok: false; reason: "EMPTY_CORPUS" | "INSUFFICIENT_CAPACITY"; available: number; required: number };
 
 /** 单轮题目数据（含答案，仅服务端持有） */
 export interface PoetryRound {
