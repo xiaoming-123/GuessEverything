@@ -15,7 +15,7 @@
  * 架空称号路线，文案不宣称为真实官制；功名权威值来自服务端 RankView。
  */
 
-import { HERO_AVATARS } from "@/lib/art-assets";
+import { HERO_AVATARS, heroAssetFor } from "@/lib/art-assets";
 import { ArtAvatar } from "./art-avatar";
 import type { RankProgressView, RankView } from "@/lib/db/rank-service";
 
@@ -90,10 +90,10 @@ export function RankRoad({ rank }: { rank: RankView }) {
       <ol className="relative space-y-1 pl-4">
         <span className="absolute top-2 bottom-2 left-[11px] w-px bg-zinc-200" />
         {currentNode && (
-          <RoadNode r={currentNode} current next={false} fog={false} playerRankId={rankId} />
+          <RoadNode r={currentNode} current next={false} fog={false} playerRankId={rankId} equippedSkin={rank.skins?.equipped ?? null} />
         )}
         {nextNode && (
-          <RoadNode r={nextNode} current={false} next fog={false} playerRankId={rankId} />
+          <RoadNode r={nextNode} current={false} next fog={false} playerRankId={rankId} equippedSkin={null} />
         )}
         {fogShown.map((r) => (
           <RoadNode
@@ -103,6 +103,7 @@ export function RankRoad({ rank }: { rank: RankView }) {
             next={false}
             fog
             playerRankId={rankId}
+            equippedSkin={null}
           />
         ))}
         {fogHiddenCount > 0 && (
@@ -125,12 +126,15 @@ function RoadNode({
   next,
   fog,
   playerRankId,
+  equippedSkin,
 }: {
   r: RankProgressView;
   current: boolean;
   next: boolean;
   fog: boolean;
   playerRankId: number;
+  /** 当前穿戴皮肤 key（P3-1；heroAssetFor 内做 rankId 匹配防御） */
+  equippedSkin: string | null;
 }) {
   const isEmperorVisible = r.isEmperor && playerRankId >= 9;
 
@@ -160,7 +164,7 @@ function RoadNode({
       {current ? (
         // 当前阶：大节点 + 立绘 + 高亮
         <div className="flex flex-1 items-center gap-3 rounded-xl border border-indigo-300 bg-indigo-50/70 px-3 py-2">
-          <ArtAvatar src={HERO_AVATARS[r.rankId]} containerClassName="h-10 w-10 rounded-xl bg-white" />
+          <ArtAvatar src={heroAssetFor(r.rankId, equippedSkin)} containerClassName="h-10 w-10 rounded-xl bg-white" />
           <span>
             <span className="block text-base font-bold text-indigo-700">{r.label}</span>
             <span className="block text-xs text-indigo-400">{r.subtitle}</span>

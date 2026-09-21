@@ -424,6 +424,17 @@ export default function PoetryRankPage() {
                   🏮 功名簿（成就 · 月历 · 总览）
                 </Link>
 
+                {/* 衣冠入口（P3-1）：拜相前整体隐藏——皮肤解锁条件涉及登极大考，
+                    与路线图皇帝节点同口径（详设 §4.3：拜相前任何入口不得露出皇帝信息） */}
+                {rank.rankId >= 9 && (
+                  <Link
+                    href="/play/poetry-rank/wardrobe"
+                    className="w-full rounded-2xl border border-amber-200 bg-white py-3 text-center text-sm font-bold text-amber-600 active:scale-[0.99]"
+                  >
+                    👘 衣冠（解锁 · 穿戴立绘）
+                  </Link>
+                )}
+
                 <Link
                   href="/play/poetry-rank/gallery"
                   className="w-full rounded-2xl border border-emerald-200 bg-white py-3 text-center text-sm font-bold text-emerald-600 active:scale-[0.99]"

@@ -10,6 +10,7 @@
  */
 
 import { RANKS } from "@/lib/games/poetry/rank";
+import { SKIN_BY_KEY } from "@/lib/games/poetry/skins";
 import type { PersonaKey } from "@/lib/games/poetry/persona";
 
 /** 各官阶 Q 版主角立绘（D5：public/art 真实资产） */
@@ -64,4 +65,23 @@ export const EXTRA_NPC_AVATARS: Record<ExtraNpcKey, string> = {
 /** 官阶 key 的稳定 slug（D5 文件命名 q_hero_rank01_tongsheng.png 等） */
 export function heroAssetKey(rankId: number): string {
   return RANKS[rankId]?.key?.toLowerCase() ?? "unknown";
+}
+
+/** P3-1 皮肤资产（详设 P3 §1.3：皮肤 key → 立绘路径；组件只认本表返回值） */
+export const SKIN_ASSETS: Record<string, string> = {
+  DRAGON_GOLD: "/art/q_skin_rank10_gold.png",
+};
+
+/**
+ * 取当前官阶立绘（P3-1 穿戴渲染唯一入口）：
+ * equippedSkinKey 绑定 rankId 匹配且有资产 → 皮肤路径；否则回退默认立绘。
+ * 绑定校验冗余做一次（服务端 canEquipSkin 已裁决，此处防脏数据渲染错图）。
+ */
+export function heroAssetFor(rankId: number, equippedSkinKey: string | null): string {
+  if (equippedSkinKey) {
+    const spec = SKIN_BY_KEY.get(equippedSkinKey);
+    const asset = SKIN_ASSETS[equippedSkinKey];
+    if (spec && asset && spec.rankId === rankId) return asset;
+  }
+  return HERO_AVATARS[rankId] ?? HERO_AVATARS[0];
 }

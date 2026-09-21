@@ -49,6 +49,8 @@ model PlayerRank {
   totalExp  Int      @default(0)
   /// 已发放周奖键集（形如 ["2026-W38"]，结算事务补记幂等，详设 §2.1 review B3）
   weeklyBonusKeys Json @default("[]")
+  /// 当前穿戴皮肤 key（P3-1 详设 §1.4；null = 默认立绘；服务端 canEquipSkin 裁决后写入）
+  equippedSkin String?
   updatedAt DateTime @updatedAt
 
   player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
@@ -195,5 +197,17 @@ model RankGuess {
   createdAt  DateTime @default(now())
 
   @@unique([playerId, date])
+  @@index([playerId])
+}
+
+/// 玩家已解锁皮肤（P3-1 详设 §1.4：解锁判定在服务端结算事务，幂等唯一）
+/// 无外键、只有 playerId 字符串——与 PlayerSeenKey/PlayerDaily 同风格（review B10）
+model PlayerSkin {
+  playerId String
+  /// 皮肤 key（纯逻辑层 SKINS 表定义）
+  skinKey  String
+  earnedAt DateTime @default(now())
+
+  @@unique([playerId, skinKey])
   @@index([playerId])
 }

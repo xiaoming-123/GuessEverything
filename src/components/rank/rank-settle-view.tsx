@@ -14,7 +14,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { HERO_AVATARS } from "@/lib/art-assets";
+import { HERO_AVATARS, heroAssetFor } from "@/lib/art-assets";
 import { RANKS } from "@/lib/games/poetry/rank";
 import { ACHIEVEMENT_BY_KEY } from "@/lib/games/poetry/achievements";
 import { ArtAvatar } from "./art-avatar";
@@ -124,7 +124,7 @@ export function RankSettleView({
               </div>
               <span className="text-2xl text-amber-500">→</span>
               <div className="animate-settle-promote" style={{ animationDelay: "120ms" }}>
-                <ArtAvatar src={HERO_AVATARS[promotion.newRank]} containerClassName="h-28 w-28" />
+                <ArtAvatar src={heroAssetFor(promotion.newRank, summary.rank.skins?.equipped ?? null)} containerClassName="h-28 w-28" />
               </div>
             </div>
           ) : (
@@ -136,7 +136,7 @@ export function RankSettleView({
                 className="animate-settle-promote mt-2"
                 style={{ transform: "scale(1.2)" }}
               >
-                <ArtAvatar src={HERO_AVATARS[promotion.newRank]} containerClassName="h-28 w-28" />
+                <ArtAvatar src={heroAssetFor(promotion.newRank, summary.rank.skins?.equipped ?? null)} containerClassName="h-28 w-28" />
               </div>
               <p className="mt-2 bg-gradient-to-r from-amber-500 to-amber-600 bg-clip-text text-3xl font-bold text-transparent">
                 {toLabel}

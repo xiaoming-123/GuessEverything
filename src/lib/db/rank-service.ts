@@ -64,6 +64,10 @@ import {
   pickHintRemoved,
 } from "@/lib/games/poetry/guess";
 import {
+  canEquipSkin,
+  skinsUnlockedByBadges,
+} from "@/lib/games/poetry/skins";
+import {
   PoetryRound,
   PoetryRoundView,
   RankKind,
@@ -158,6 +162,8 @@ export interface RankView {
   guess: { done: boolean; correct?: boolean; gained?: number } | null;
   /** 限时事件（P2 详设 §2.1）：当前生效事件（无则 null；横幅数据源） */
   event: ActiveEventView | null;
+  /** 皮肤（P3-1 详设 §1.4）：已拥有 key 集 + 当前穿戴（文案客户端查 SKINS 表渲染） */
+  skins: { owned: string[]; equipped: string | null };
 }
 
 /** 官阶开局视图 */
@@ -1016,6 +1022,27 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
       });
     }
 
+    // 8. 皮肤解锁（P3-1 详设 §1.4：成就评估后按新达成 badge 解锁；幂等——
+    //    已拥有集先查，skinsUnlockedByBadges 纯函数过滤，createMany 唯一键兜底）
+    const ownedSkinRows = await tx.playerSkin.findMany({
+      where: { playerId },
+      select: { skinKey: true },
+    });
+    const newSkins = skinsUnlockedByBadges(
+      newBadges,
+      ownedSkinRows.map((r) => r.skinKey),
+    );
+    if (newSkins.length > 0) {
+      // SQLite 连接器无 skipDuplicates：逐条 upsert 幂等（重放结算不炸唯一键）
+      for (const skinKey of newSkins) {
+        await tx.playerSkin.upsert({
+          where: { playerId_skinKey: { playerId, skinKey } },
+          create: { playerId, skinKey },
+          update: {},
+        });
+      }
+    }
+
     return {
       correctCount,
       totalRounds,
@@ -1123,6 +1150,17 @@ async function buildRankView(playerId: string): Promise<RankView> {
   const rankId = row?.rank ?? 0;
   const totalExp = row?.totalExp ?? 0;
   const next = nextRank(rankId);
+  // 皮肤视图（P3-1 详设 §1.4）：已拥有 key 集 + 穿戴位（脏数据防御：
+  // 穿戴皮肤若不再合法（表移除/rank 不符——理论上皇帝皮肤恒合法），下发 null）
+  const skinRows = await prisma.playerSkin.findMany({
+    where: { playerId },
+    select: { skinKey: true },
+  });
+  const ownedSkins = skinRows.map((r) => r.skinKey);
+  const equippedRaw = row?.equippedSkin ?? null;
+  const equipped =
+    equippedRaw && canEquipSkin(equippedRaw, ownedSkins, rankId) ? equippedRaw : null;
+  const skinView = { owned: ownedSkins, equipped };
   // 剪影竞猜（D4 详设 §4.2）：rankId>=8 时 null（入口整体隐藏，皇帝不外露）
   const guess = isGuessAvailable(rankId)
     ? await prisma.rankGuess.findUnique({
@@ -1158,6 +1196,7 @@ async function buildRankView(playerId: string): Promise<RankView> {
     guess,
     // 限时事件（P2 详设 §2.1）：当前生效事件（横幅数据源；无则 null）
     event: activeEvent(Date.now()),
+    skins: skinView,
   };
 }
 
@@ -1169,6 +1208,56 @@ export async function getRankView(playerId: string): Promise<RankView> {
   const player = await prisma.player.findUnique({ where: { id: playerId } });
   if (!player) throw new ApiError(404, "玩家不存在");
   return buildRankView(playerId);
+}
+
+/* ------------------------------------------------------------------ */
+/* 皮肤装备（P3-1 详设 §1.4：服务端权威裁决）                            */
+/* ------------------------------------------------------------------ */
+
+export interface SetSkinInput {
+  playerId?: string;
+  /** 皮肤 key；null = 卸下（回默认立绘） */
+  skinKey?: string | null;
+}
+
+export interface SetSkinView {
+  /** 装备后的穿戴位（与 RankView.skins.equipped 同口径） */
+  equipped: string | null;
+}
+
+/**
+ * 装备/卸下皮肤（POST /api/games/poetry/rank/skin 的薄壳目标）。
+ * - skinKey = null：卸下，恒合法（有 PlayerRank 行即可）；
+ * - 非 null：canEquipSkin 纯函数裁决（拥有 + rankId 匹配），不过 → 403；
+ * - 幂等：重复装备同 key 结果不变。
+ */
+export async function setSkin(input: SetSkinInput): Promise<SetSkinView> {
+  const useDb = await isDbAvailable();
+  if (!useDb) throw new ApiError(503, "DB_UNAVAILABLE：衣冠需要数据库");
+  const { playerId, skinKey } = input;
+  if (!playerId || typeof playerId !== "string") throw new ApiError(400, "参数不完整");
+  // 卸下必须显式传 null；undefined/非法类型一律 400
+  if (skinKey !== null && typeof skinKey !== "string") throw new ApiError(400, "参数不完整");
+
+  const rankRow = await prisma.playerRank.findUnique({ where: { playerId } });
+  if (!rankRow) throw new ApiError(404, "玩家官阶档案不存在");
+
+  if (skinKey !== null) {
+    const ownedRows = await prisma.playerSkin.findMany({
+      where: { playerId },
+      select: { skinKey: true },
+    });
+    const owned = ownedRows.map((r) => r.skinKey);
+    if (!canEquipSkin(skinKey, owned, rankRow.rank)) {
+      throw new ApiError(403, "无权穿戴此衣冠");
+    }
+  }
+
+  await prisma.playerRank.update({
+    where: { playerId },
+    data: { equippedSkin: skinKey ?? null },
+  });
+  return { equipped: skinKey ?? null };
 }
 
 /* ------------------------------------------------------------------ */

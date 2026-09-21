@@ -8,12 +8,13 @@
  *   （数据源 RankView.recentGames，D1 交付；不足 3 局用全部，无局则不显示估算行）。
  */
 
-import { HERO_AVATARS } from "@/lib/art-assets";
+import { heroAssetFor } from "@/lib/art-assets";
 import { ArtAvatar } from "./art-avatar";
 import type { RankView } from "@/lib/db/rank-service";
 
 export function RankIdentityCard({ rank }: { rank: RankView }) {
-  const avatar = HERO_AVATARS[rank.rankId];
+  // P3-1：穿戴皮肤渲染（equipped 与 rankId 不匹配时 heroAssetFor 自动回退默认立绘）
+  const avatar = heroAssetFor(rank.rankId, rank.skins?.equipped ?? null);
   const isEmperor = rank.ranks[rank.rankId]?.isEmperor ?? false;
   const games = rank.recentGames ?? [];
 

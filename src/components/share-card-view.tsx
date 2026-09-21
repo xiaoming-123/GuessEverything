@@ -10,7 +10,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { HERO_AVATARS } from "@/lib/art-assets";
+import { heroAssetFor } from "@/lib/art-assets";
 import { buildShareCardLines } from "@/lib/share-card";
 import type { RankSummary } from "@/lib/db/rank-service";
 
@@ -63,7 +63,7 @@ export function ShareCardView({ summary, badgeLabels }: ShareCardViewProps) {
     newBadges: badgeLabels,
     dateKey: todayKey(),
   });
-  const heroSrc = HERO_AVATARS[summary.rankId] ?? HERO_AVATARS[0];
+  const heroSrc = heroAssetFor(summary.rankId, summary.rank.skins?.equipped ?? null);
 
   useEffect(() => {
     let cancelled = false;
