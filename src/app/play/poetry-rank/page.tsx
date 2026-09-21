@@ -30,7 +30,7 @@ import { RankIdentityCard } from "@/components/rank/rank-identity-card";
 import { RankSettleView } from "@/components/rank/rank-settle-view";
 import { PersonaBubble } from "@/components/rank/persona-bubble";
 import { QuizHUD } from "@/components/quiz/quiz-hud";
-import { ChoiceList } from "@/components/quiz/choice-list";
+import { DialogueChoices } from "@/components/quiz/dialogue-choices";
 import { useAutoNext } from "@/components/quiz/use-auto-next";
 
 const KIND_LABEL: Record<RankKind, string> = {
@@ -236,8 +236,8 @@ export default function PoetryRankPage() {
   return (
     <main className="mx-auto max-w-md px-4 py-8">
       <div className="mb-6 flex items-center justify-between">
-        <Link href="/play/poetry" className="text-sm text-zinc-500 hover:text-zinc-800">
-          ← 学段闯关
+        <Link href="/" className="text-sm text-zinc-500 hover:text-zinc-800">
+          ← 返回首页
         </Link>
         <div className="text-sm font-medium">🎓 诗词升官</div>
         {s.phase === "IDLE" ? (
@@ -282,14 +282,13 @@ export default function PoetryRankPage() {
                 const done = rank.guess.done;
                 const showResult = done || guessResult !== null;
                 const resCorrect = done ? rank.guess.correct : guessResult?.correct;
-                const resGained = done ? rank.guess.gained ?? 0 : guessResult?.gained ?? 0;
                 return (
                   <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
                     <p className="mb-1 text-sm font-bold text-amber-700">
                       🔮 剪影竞猜：猜猜再下一阶（迷雾阶）的官衔？
                     </p>
                     <p className="mb-3 text-xs text-amber-600/80">
-                      每日 1 次 · 猜中 +100 功名
+                      每日 1 次
                     </p>
                     {opts && (
                       <div className="grid grid-cols-2 gap-2">
@@ -315,7 +314,7 @@ export default function PoetryRankPage() {
                     {showResult && (
                       <p className="mt-3 text-sm font-bold">
                         {resCorrect ? (
-                          <span className="text-emerald-600">✅ 猜中了！+{resGained} 功名</span>
+                          <span className="text-emerald-600">✅ 猜中了！</span>
                         ) : (
                           <span className="text-zinc-500">未中（明日再试）</span>
                         )}
@@ -353,7 +352,7 @@ export default function PoetryRankPage() {
                     📜 科考（晋升一阶 · 10 题）
                     {!examReady && rank.expToNext > 0 && (
                       <span className="mt-1 block text-xs">
-                        还差 {rank.expToNext} 功名
+                        功名尚在积攒中
                       </span>
                     )}
                   </button>
@@ -387,7 +386,7 @@ export default function PoetryRankPage() {
               </div>
 
               <p className="mt-4 text-center text-xs text-zinc-400">
-                已见题永久去重 · 正确率 60% 通过科考擢升 · 架空称号路线
+                研习积功名 · 科考擢升 · 架空称号路线
               </p>
             </>
           )}
@@ -461,7 +460,7 @@ export default function PoetryRankPage() {
             })()}
 
             <div className="mt-4">
-              <ChoiceList
+              <DialogueChoices
                 options={s.rounds[s.currentIndex].options}
                 selected={s.selectedOption}
                 correctAnswer={s.lastJudge?.correctAnswer ?? null}
@@ -490,8 +489,8 @@ export default function PoetryRankPage() {
                 }
               >
                 {s.hintUsed
-                  ? "💡 已问过同窗（本局功名 ×0.8）"
-                  : "💡 问同窗（移除 2 个错误选项 · 本局功名 ×0.8）"}
+                  ? "💡 已问过同窗"
+                  : "💡 问同窗（移除 2 个错误选项）"}
               </button>
             )}
 

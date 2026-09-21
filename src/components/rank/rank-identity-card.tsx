@@ -39,11 +39,8 @@ export function RankIdentityCard({ rank }: { rank: RankView }) {
           <p className="mt-0.5 truncate text-xs text-zinc-500">{rank.subtitle}</p>
           <p className="mt-1 text-sm text-indigo-500 tabular-nums">
             功名 {rank.totalExp}
-            {!isEmperor && (
-              <span className="text-zinc-400">
-                {" "}
-                · 距下一科考还差 {rank.expToNext}
-              </span>
+            {!isEmperor && rank.expToNext > 0 && (
+              <span className="text-zinc-400"> · 功名积攒中</span>
             )}
           </p>
         </div>
@@ -54,7 +51,7 @@ export function RankIdentityCard({ rank }: { rank: RankView }) {
       )}
       {est !== null && (
         <p className="mt-3 text-xs text-zinc-500">
-          还差 {rank.expToNext} 功名，约 {est} 局研习
+          预计约 {est} 局研习可赴下一场科考
           <span className="ml-1 text-zinc-400">（按近 {games.length} 局均值）</span>
         </p>
       )}

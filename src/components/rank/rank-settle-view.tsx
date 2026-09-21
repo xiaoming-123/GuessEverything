@@ -105,7 +105,7 @@ export function RankSettleView({
     ? isExamFailed
       ? "功名已保留，补足正确率后可重考"
       : promotion.reason === "EXP_INSUFFICIENT"
-        ? "功名未达下一官阶门槛，继续研习积攒"
+        ? "功名积攒未足，继续研习"
         : "研习积功名，达门槛后赴科考擢升"
     : "一纸文书，加官进爵";
 

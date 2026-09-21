@@ -61,7 +61,7 @@ export function RankRoad({ rank }: { rank: RankView }) {
               />
             </div>
             <p className="mt-1 text-xs text-indigo-400 tabular-nums">
-              距下一场科考还差 {rank.expToNext} 功名
+              功名积攒中
             </p>
           </>
         )}
