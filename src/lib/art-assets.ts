@@ -53,6 +53,14 @@ export function npcExpressionAsset(
 /** 封面（D5） */
 export const COVER_ART = "/art/cover_v1.png";
 
+/** P2 NPC 立绘（详设 P2 方案 §1.2：同窗/内侍/说书人；组件只认本表返回的字符串） */
+export type ExtraNpcKey = "CLASSMATE" | "INATTENDANT" | "STORYTELLER";
+export const EXTRA_NPC_AVATARS: Record<ExtraNpcKey, string> = {
+  CLASSMATE: "/art/q_npc_classmate.png",
+  INATTENDANT: "/art/q_npc_inattendant.png",
+  STORYTELLER: "/art/q_npc_storyteller.png",
+};
+
 /** 官阶 key 的稳定 slug（D5 文件命名 q_hero_rank01_tongsheng.png 等） */
 export function heroAssetKey(rankId: number): string {
   return RANKS[rankId]?.key?.toLowerCase() ?? "unknown";

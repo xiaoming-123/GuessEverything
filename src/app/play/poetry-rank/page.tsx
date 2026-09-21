@@ -29,6 +29,8 @@ import { RankRoad } from "@/components/rank/rank-road";
 import { RankIdentityCard } from "@/components/rank/rank-identity-card";
 import { RankSettleView } from "@/components/rank/rank-settle-view";
 import { PersonaBubble } from "@/components/rank/persona-bubble";
+import { ArtAvatar } from "@/components/rank/art-avatar";
+import { EXTRA_NPC_AVATARS } from "@/lib/art-assets";
 import { QuizHUD } from "@/components/quiz/quiz-hud";
 import { DialogueChoices } from "@/components/quiz/dialogue-choices";
 import { useAutoNext } from "@/components/quiz/use-auto-next";
@@ -359,15 +361,20 @@ export default function PoetryRankPage() {
                 )}
 
                 <button
+                  type="button"
                   onClick={() => void startGame("DAILY")}
                   disabled={dailyDone}
                   className={
                     dailyDone
-                      ? "w-full rounded-2xl border border-emerald-200 bg-emerald-50 py-3 text-sm font-bold text-emerald-600"
-                      : "w-full rounded-2xl bg-emerald-500 py-3 text-base font-bold text-white shadow active:scale-[0.99]"
+                      ? "flex w-full items-center justify-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 py-3 text-sm font-bold text-emerald-600"
+                      : "flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-500 py-3 text-base font-bold text-white shadow active:scale-[0.99]"
                   }
                 >
-                  {dailyDone ? "✅ 每日题已完成" : "🌱 每日题（1 题 · 积功名 · 连满得周奖）"}
+                  <ArtAvatar
+                    src={EXTRA_NPC_AVATARS.STORYTELLER}
+                    containerClassName={`h-6 w-6 shrink-0 rounded-full border bg-white ${dailyDone ? "border-emerald-200" : "border-emerald-300"}`}
+                  />
+                  {dailyDone ? "每日题已完成" : "每日题（1 题 · 积功名 · 连满得周奖）"}
                 </button>
 
                 <Link
@@ -484,13 +491,17 @@ export default function PoetryRankPage() {
                 disabled={s.hintUsed || s.submitting}
                 className={
                   s.hintUsed
-                    ? "mt-3 w-full rounded-xl border border-zinc-200 bg-zinc-50 py-2 text-sm text-zinc-400"
-                    : "mt-3 w-full rounded-xl border border-indigo-200 bg-white py-2 text-sm font-bold text-indigo-600 active:scale-[0.99]"
+                    ? "mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-zinc-50 py-2 text-sm text-zinc-400"
+                    : "mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-indigo-200 bg-white py-2 text-sm font-bold text-indigo-600 active:scale-[0.99]"
                 }
               >
+                <ArtAvatar
+                  src={EXTRA_NPC_AVATARS.CLASSMATE}
+                  containerClassName="h-6 w-6 shrink-0 rounded-full border border-zinc-200 bg-white"
+                />
                 {s.hintUsed
-                  ? "💡 已问过同窗"
-                  : "💡 问同窗（移除 2 个错误选项）"}
+                  ? "已问过同窗"
+                  : "问同窗（移除 2 个错误选项）"}
               </button>
             )}
 
