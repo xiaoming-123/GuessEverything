@@ -32,6 +32,8 @@ import { RankSettleView } from "@/components/rank/rank-settle-view";
 import { PersonaBubble } from "@/components/rank/persona-bubble";
 import { ArtAvatar } from "@/components/rank/art-avatar";
 import { EXTRA_NPC_AVATARS } from "@/lib/art-assets";
+import { ShareCardView } from "@/components/share-card-view";
+import { ACHIEVEMENT_BY_KEY } from "@/lib/games/poetry/achievements";
 import { QuizHUD } from "@/components/quiz/quiz-hud";
 import { DialogueChoices } from "@/components/quiz/dialogue-choices";
 import { useAutoNext } from "@/components/quiz/use-auto-next";
@@ -579,6 +581,14 @@ export default function PoetryRankPage() {
               🏮 {s.lastSummary.event.name}赐功 ×{s.lastSummary.event.expMultiplier}
             </p>
           )}
+          {/* 分享卡（P2 详设 §3：canvas 长图，纯客户端） */}
+          <ShareCardView
+            summary={s.lastSummary}
+            badgeLabels={(s.lastSummary.newBadges ?? [])
+              .map((k) => ACHIEVEMENT_BY_KEY.get(k))
+              .filter((a): a is NonNullable<typeof a> => !!a)
+              .map((a) => a.label)}
+          />
         </section>
       )}
     </main>
