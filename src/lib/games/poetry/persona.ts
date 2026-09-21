@@ -162,3 +162,11 @@ export function failLine(accuracy: number): string {
 export function practiceLine(expGained: number): string {
   return `这一卷记下 ${expGained} 功名。`;
 }
+
+/**
+ * 限时事件播报句（P2 详设 §2.2：命中事件时结算台词尾部追加，内侍播报）。
+ * 纯文案拼装，不含任何题面 / 答案信息（红线不变）。
+ */
+export function eventLine(eventName: string, expMultiplier: number): string {
+  return `内侍宣：${eventName}赐功 ×${expMultiplier}。`;
+}

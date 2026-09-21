@@ -22,6 +22,8 @@ interface QuizHUDProps {
   theme: QuizTheme;
   /** 时间到（只触发一次，由页面发起超时提交） */
   onTimeout: () => void;
+  /** 限时事件徽标（P2 详设 §2.3：开局锁定的事件名；无则不渲染） */
+  eventBadge?: string | null;
 }
 
 const TICK_MS = 100;
@@ -35,6 +37,7 @@ export function QuizHUD({
   active,
   theme,
   onTimeout,
+  eventBadge,
 }: QuizHUDProps) {
   const [remaining, setRemaining] = useState(durationMs);
   const firedRef = useRef(false);
@@ -77,14 +80,21 @@ export function QuizHUD({
         <span>
           第 {index + 1} / {total} 题
         </span>
-        {combo > 1 && (
-          <span
-            key={combo}
-            className="animate-combo-pop rounded-full bg-orange-50 px-2 py-0.5 font-semibold text-orange-500"
-          >
-            🔥 连击 ×{combo}
-          </span>
-        )}
+        <span className="flex items-center gap-1.5">
+          {eventBadge && (
+            <span className="rounded-full bg-amber-50 px-2 py-0.5 font-semibold text-amber-600">
+              🏮 {eventBadge}
+            </span>
+          )}
+          {combo > 1 && (
+            <span
+              key={combo}
+              className="animate-combo-pop rounded-full bg-orange-50 px-2 py-0.5 font-semibold text-orange-500"
+            >
+              🔥 连击 ×{combo}
+            </span>
+          )}
+        </span>
       </div>
       <div className="mb-2 h-1 overflow-hidden rounded-full bg-zinc-100">
         <div

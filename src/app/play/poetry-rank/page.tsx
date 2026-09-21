@@ -16,6 +16,7 @@ import Link from "next/link";
 import { secureFetch } from "@/lib/crypto/secure-fetch";
 import { getRoundTimeMs } from "@/lib/games/timing";
 import { buildGuessOptions, isGuessAvailable } from "@/lib/games/poetry/guess";
+import { EVENT_BY_ID } from "@/lib/games/poetry/events";
 import type { RankKind } from "@/lib/games/poetry/types";
 import type {
   RankedJudgeView,
@@ -40,6 +41,38 @@ const KIND_LABEL: Record<RankKind, string> = {
   EXAM: "科考",
   DAILY: "每日题",
 };
+
+/**
+ * 限时事件横幅（P2 详设 §2.3）：内侍播报 + tagline + 倍率 + 倒计时（纯展示）。
+ * 数据源 RankView.event（服务端权威计算，客户端零判定）。
+ */
+function EventBanner({ event }: { event: NonNullable<RankView["event"]> }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, []);
+  const left = Math.max(0, event.endsAt - now);
+  const hh = Math.floor(left / 3_600_000);
+  const mm = Math.floor((left % 3_600_000) / 60_000);
+  const ss = Math.floor((left % 60_000) / 1000);
+  const remain = `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+  return (
+    <div className="mt-4 flex items-center gap-3 rounded-2xl border border-amber-300 bg-amber-50 p-3">
+      <ArtAvatar
+        src={EXTRA_NPC_AVATARS.INATTENDANT}
+        containerClassName="h-10 w-10 shrink-0 rounded-full border border-amber-200 bg-white"
+      />
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-bold text-amber-700">
+          🏮 {event.name} · 功名 ×{event.expMultiplier}
+        </p>
+        <p className="truncate text-xs text-amber-600/80">{event.tagline}</p>
+      </div>
+      <span className="shrink-0 text-xs font-bold tabular-nums text-amber-600">{remain}</span>
+    </div>
+  );
+}
 
 export default function PoetryRankPage() {
   const s = useRankGameStore();
@@ -326,6 +359,11 @@ export default function PoetryRankPage() {
                 );
               })()}
 
+              {/* 限时事件横幅（P2 详设 §2.3：rank.event 命中时渲染；内侍播报 + 倒计时） */}
+              {rank.event && (
+                <EventBanner event={rank.event} />
+              )}
+
               <div className="mt-6 grid gap-3">
                 <button
                   onClick={() => void startGame("PRACTICE")}
@@ -438,6 +476,7 @@ export default function PoetryRankPage() {
             active={s.phase === "PLAYING" && !s.submitting}
             theme="indigo"
             onTimeout={() => void answer(null, true)}
+            eventBadge={s.event ? EVENT_BY_ID[s.event]?.name ?? null : null}
           />
 
           <div key={s.currentIndex} className="animate-question-in">
@@ -524,15 +563,23 @@ export default function PoetryRankPage() {
 
       {/* 结算 */}
       {s.phase === "FINISHED" && s.lastSummary && (
-        <RankSettleView
-          summary={s.lastSummary}
-          onBack={goHome}
-          onRetry={
-            s.lastSummary.kind === "EXAM" && s.lastSummary.promotion.reason === "EXAM_FAILED"
-              ? () => void startGame("EXAM")
-              : undefined
-          }
-        />
+        <section>
+          <RankSettleView
+            summary={s.lastSummary}
+            onBack={goHome}
+            onRetry={
+              s.lastSummary.kind === "EXAM" && s.lastSummary.promotion.reason === "EXAM_FAILED"
+                ? () => void startGame("EXAM")
+                : undefined
+            }
+          />
+          {/* 限时事件结算行（P2 详设 §2.3：功名入账行下追加赐功口径） */}
+          {s.lastSummary.event && (
+            <p className="mt-2 text-center text-xs font-bold text-amber-600">
+              🏮 {s.lastSummary.event.name}赐功 ×{s.lastSummary.event.expMultiplier}
+            </p>
+          )}
+        </section>
       )}
     </main>
   );

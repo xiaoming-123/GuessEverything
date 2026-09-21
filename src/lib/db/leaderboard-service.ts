@@ -37,7 +37,12 @@ export interface LeaderboardView {
    * playerId 缺失 / 未注册 / 未进前 REAL_TAKE 时为 null（前端兜底「距金榜」文案）。
    */
   my: (ChaseTarget & { rankLabel: string; totalExp: number }) | null;
+  /** 赛季键（P2 详设 §2.4 接口位：v1 常青榜恒 "v1"，赛季重置随 P3） */
+  season: string;
 }
+
+/** 赛季键（v1 常青榜；赛季化钩子留接口位，详设 §2.4） */
+export const SEASON_KEY = "v1";
 
 /**
  * 查皇榜视图。
@@ -82,5 +87,5 @@ export async function getLeaderboardView(playerId: string): Promise<LeaderboardV
     }
   }
 
-  return { items, my };
+  return { items, my, season: SEASON_KEY };
 }

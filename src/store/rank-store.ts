@@ -61,6 +61,8 @@ interface RankGameStore {
   persona: PersonaKey | null;
   /** 开局白（D1：服务端按会话 id 哈希生成，同会话同句） */
   opening: string;
+  /** 开局锁定的限时事件（P2 详设 §2.2：HUD 徽标数据源；无则 null） */
+  event: string | null;
   /** 问同窗灰置（D4 详设 §4.1，review A9）：仅当 roundIndex === currentIndex 时灰置 */
   hint: { roundIndex: number; removedIndexes: number[] } | null;
   /** 本局问同窗是否已用（D4：按钮置灰） */
@@ -100,6 +102,7 @@ const initial = {
   opening: "",
   hint: null as { roundIndex: number; removedIndexes: number[] } | null,
   hintUsed: false,
+  event: null as string | null,
 };
 
 export const useRankGameStore = create<RankGameStore>((set, get) => ({
@@ -108,7 +111,7 @@ export const useRankGameStore = create<RankGameStore>((set, get) => ({
   reset: () => set({ ...initial }),
   setError: (error) => set({ error, phase: "ERROR", submitting: false }),
 
-  startGame: ({ gameSessionId, expiresAt, kind, rankId, rank, rounds, persona, opening }) =>
+  startGame: ({ gameSessionId, expiresAt, kind, rankId, rank, rounds, persona, opening, event }) =>
     set({
       ...initial,
       phase: "PLAYING",
@@ -122,6 +125,7 @@ export const useRankGameStore = create<RankGameStore>((set, get) => ({
       roundStartedAt: Date.now(),
       persona,
       opening,
+      event,
     }),
 
   resume: (view, rank) => {
@@ -147,6 +151,7 @@ export const useRankGameStore = create<RankGameStore>((set, get) => ({
       opening: view.opening,
       hint,
       hintUsed: view.hint !== null,
+      event: view.event,
     });
   },
 

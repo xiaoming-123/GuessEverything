@@ -29,6 +29,7 @@ import { computeScore } from "@/lib/games/poetry/score";
 import { evaluatePromotion, PromotionResult } from "@/lib/games/poetry/promote";
 import {
   feedbackLine,
+  eventLine,
   failLine,
   openingLine,
   personaFor,
@@ -36,6 +37,11 @@ import {
   promotionLine,
   type PersonaKey,
 } from "@/lib/games/poetry/persona";
+import {
+  activeEvent,
+  eventForDate,
+  type ActiveEventView,
+} from "@/lib/games/poetry/events";
 import { isRankId, nextRank, RANKS } from "@/lib/games/poetry/rank";
 import { judgeClear } from "@/lib/games/stages";
 import {
@@ -150,6 +156,8 @@ export interface RankView {
   corpusTotal: number;
   /** 剪影竞猜（D4 详设 §4.2）：rankId>=8 时 null（入口整体隐藏） */
   guess: { done: boolean; correct?: boolean; gained?: number } | null;
+  /** 限时事件（P2 详设 §2.1）：当前生效事件（无则 null；横幅数据源） */
+  event: ActiveEventView | null;
 }
 
 /** 官阶开局视图 */
@@ -166,6 +174,8 @@ export interface RankedStartView {
   persona: PersonaKey;
   /** 开局白（服务端按会话 id 哈希生成，同会话同句） */
   opening: string;
+  /** 开局锁定的限时事件（P2 详设 §2.2）：null 表示未命中；HUD 徽标数据源 */
+  event: string | null;
 }
 
 /** 官阶结算摘要（答完最后一题返回） */
@@ -187,6 +197,8 @@ export interface RankSummary {
   newBadges: string[];
   /** 本局用过问同窗（D4 详设 §4.1：功名已 ×0.8 折价，结算展示提示） */
   hintUsed: boolean;
+  /** 本局实际套用的限时事件（P2 详设 §2.2；EXAM 功名入账不加成但保留信息） */
+  event: { id: string; name: string; expMultiplier: number } | null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -366,6 +378,8 @@ export async function startRankedSession(
         rounds: result.rounds.map(toRoundView),
         persona,
         opening: openingLine(persona, hashIdToSeed(result.id)),
+        // 限时事件（P2 详设 §2.2）：开局锁定（HUD 徽标）
+        event: activeEvent(Date.now())?.id ?? null,
       };
     } catch (err) {
       if (err instanceof ApiError) throw err; // 业务错误（门槛/容量/玩家）直接上抛
@@ -611,6 +625,7 @@ export async function judgeRankedAnswer(
     correctAnswer,
     timeMs,
     gained: score.gained,
+    createdAt: session.createdAt,
   });
   return {
     correct,
@@ -791,6 +806,8 @@ interface SettleInput {
   timeMs: number;
   /** 最后一题判分（= score.ts computeScore 的 gained） */
   gained: number;
+  /** 开局时刻（P2 详设 §2.2：事件窗口按开局日判定，中途跨日不变） */
+  createdAt: Date;
 }
 
 /**
@@ -868,7 +885,17 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
       select: { hintUsed: true },
     });
     const hintUsed = sessHint?.hintUsed ?? false;
-    const expGained = hintUsed ? Math.round(sessionScore * 0.8) : sessionScore;
+    const baseExp = hintUsed ? Math.round(sessionScore * 0.8) : sessionScore;
+
+    // 限时事件功名加成（P2 详设 §2.2）：按开局日（GameSession.createdAt 所在
+    // 日期，dateKey 注入 eventForDate 纯函数重算，确定性可复算）。
+    // PRACTICE/DAILY 适用；EXAM 晋升判定只比正确率，功名入账不加成（event=null）。
+    const event = input.kind === "EXAM"
+      ? null
+      : eventForDate(localDate(input.createdAt));
+    const expGained = event
+      ? Math.round(baseExp * event.expMultiplier)
+      : baseExp;
 
     // 诗词阁落库（D3：结算事务内对本局全部轮次幂等入阁，含最后一题；
     // 崩溃恢复场景下重放结算可补齐——非末题判题时已入阁，upsert 无副作用）
@@ -999,9 +1026,11 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
       hintUsed,
       promotion,
       newBadges,
-      // 结算台词（D1，详设 §1.2：按 kind 与 promotion.promoted 三分支）
+      event,
+      // 结算台词（D1，详设 §1.2：按 kind 与 promotion.promoted 三分支；
+      // P2 命中事件时尾部追加内侍播报句，不泄答案红线不变）
       settleLine:
-        input.kind !== "EXAM"
+        (input.kind !== "EXAM"
           ? practiceLine(expGained)
           : promotion.promoted
             ? promotionLine(
@@ -1009,7 +1038,7 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
                 RANKS[currentRank].label,
                 RANKS[promotion.newRank].label,
               )
-            : failLine(accuracy),
+            : failLine(accuracy)) + (event ? eventLine(event.name, event.expMultiplier) : ""),
     };
   });
 
@@ -1028,6 +1057,7 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
     settleLine: result.settleLine,
     newBadges: result.newBadges,
     hintUsed: result.hintUsed,
+    event: result.event,
   };
 }
 
@@ -1126,6 +1156,8 @@ async function buildRankView(playerId: string): Promise<RankView> {
     daily,
     corpusTotal,
     guess,
+    // 限时事件（P2 详设 §2.1）：当前生效事件（横幅数据源；无则 null）
+    event: activeEvent(Date.now()),
   };
 }
 
@@ -1298,6 +1330,8 @@ export interface RankedResumeView {
   opening: string;
   /** 问同窗灰置（D4 详设 §4.1，review A9）：客户端仅当 roundIndex === currentIndex 时灰置，答过该题后自然失效 */
   hint: { roundIndex: number; removedIndexes: number[] } | null;
+  /** 开局锁定的限时事件（P2 详设 §2.2）：与 start 视图同口径（按开局日重算） */
+  event: string | null;
 }
 
 /**
@@ -1342,5 +1376,7 @@ export async function resumeRankedSession(
             removedIndexes: session.hintRemoved as unknown as number[],
           }
         : null,
+    // 限时事件（P2 详设 §2.2）：按开局日重算，与 start 视图同口径
+    event: eventForDate(localDate(session.createdAt))?.id ?? null,
   };
 }
