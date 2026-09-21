@@ -51,6 +51,10 @@ model PlayerRank {
   weeklyBonusKeys Json @default("[]")
   /// 当前穿戴皮肤 key（P3-1 详设 §1.4；null = 默认立绘；服务端 canEquipSkin 裁决后写入）
   equippedSkin String?
+  /// 当前赛季键（P3-2 详设 §2.3：YYYY-Qn；旧档默认 "v1"，结算/皇榜视图惰性迁移定格）
+  seasonKey String @default("v1")
+  /// 本赛季功名增量（皇榜排序键；跨赛季定格后清零重计，totalExp 常青不动）
+  seasonExp Int @default(0)
   updatedAt DateTime @updatedAt
 
   player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
@@ -210,4 +214,20 @@ model PlayerSkin {
 
   @@unique([playerId, skinKey])
   @@index([playerId])
+}
+
+/// 赛季定格快照（P3-2 详设 §2.3：跨赛季时惰性写入，幂等唯一）
+/// 无外键、只有 playerId 字符串——与 PlayerSeenKey/PlayerDaily 同风格（review B10）
+model SeasonBoard {
+  /// 被定格的赛季键（YYYY-Qn 或旧档 "v1"）
+  seasonKey String
+  playerId  String
+  /// 定格时的官阶
+  rank      Int
+  /// 定格时的赛季功名（皇榜往期战绩数据源）
+  seasonExp Int
+  frozenAt  DateTime @default(now())
+
+  @@unique([seasonKey, playerId])
+  @@index([seasonKey, seasonExp])
 }

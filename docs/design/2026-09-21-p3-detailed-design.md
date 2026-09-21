@@ -135,7 +135,7 @@ model SeasonBoard {
 
 1. **结算事务内**（settleRankedSession，功名入账处）：读 `playerRank.seasonKey`，若 ≠ `seasonKeyForDate(localDate())` → 同事务先写 `SeasonBoard.upsert`（旧 seasonKey, rank, 旧 seasonExp）再把 `seasonKey` 更新为当前、`seasonExp` 置 0，然后 `seasonExp += expGained`。
 2. **皇榜视图内**（getLeaderboardView，事务）：对取回的 realRows 中 `seasonKey ≠ 当前` 的行批量补定格（upsert）+ 重置——覆盖「跨赛季后不再结算但打开皇榜」的惰性路径；不活跃且从不打开皇榜的玩家不进快照（可接受：快照语义 = 定格时可见的活跃档；SeasonBoard 只增不改，历史可溯）。
-3. 定格行 `seasonExp = 0` 的也写（参与过赛季即留痕）；upsert 幂等，两路径并发撞唯一键吞冲突。
+3. 定格行 `seasonExp = 0` 的**不写**（无战绩不留痕；避免新档 "v1" 默认键跨季时产生噪音快照行），upsert 幂等，两路径并发撞唯一键即跳过。
 
 ### 2.5 皇榜服务与前端
 

@@ -67,6 +67,7 @@ import {
   canEquipSkin,
   skinsUnlockedByBadges,
 } from "@/lib/games/poetry/skins";
+import { seasonKeyForDate } from "@/lib/games/poetry/season";
 import {
   PoetryRound,
   PoetryRoundView,
@@ -943,9 +944,34 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
     }
     const currentRank = rankRow.rank;
     const totalExp = rankRow.totalExp + expGained;
+
+    // 4b. 赛季惰性定格（P3-2 详设 §2.4 路径 1）：存档赛季 ≠ 当前赛季 →
+    //     同事务先 SeasonBoard.upsert 定格旧赛季（幂等；旧季 seasonExp=0 无战绩
+    //     不落快照，避免新档 "v1" 默认键产生噪音行），再切键清零重计 seasonExp。
+    //     totalExp/rank 常青不动（功名只增不减红线）。
+    const currentSeason = seasonKeyForDate(localDate());
+    let seasonExp = rankRow.seasonExp;
+    const seasonUpdate: { seasonKey?: string } = {};
+    if (rankRow.seasonKey !== currentSeason) {
+      if (rankRow.seasonExp > 0) {
+        await tx.seasonBoard.upsert({
+          where: { seasonKey_playerId: { seasonKey: rankRow.seasonKey, playerId } },
+          create: {
+            seasonKey: rankRow.seasonKey,
+            playerId,
+            rank: rankRow.rank,
+            seasonExp: rankRow.seasonExp,
+          },
+          update: {},
+        });
+      }
+      seasonUpdate.seasonKey = currentSeason;
+      seasonExp = 0;
+    }
+    seasonExp += expGained;
     await tx.playerRank.update({
       where: { playerId },
-      data: { totalExp },
+      data: { totalExp, seasonExp, ...seasonUpdate },
     });
 
     // 5. 晋升判定（纯函数再校验：目标官阶 / 功名门槛 / 正确率 ≥60%）
@@ -981,6 +1007,8 @@ async function settleRankedSession(input: SettleInput): Promise<RankSummary> {
         where: { playerId },
         data: {
           totalExp: totalExp + bonusExp,
+          // 周奖同属本赛季功名增量（P3-2：seasonExp 与 totalExp 同口径累加）
+          seasonExp: seasonExp + bonusExp,
           weeklyBonusKeys: [
             ...(rankRow.weeklyBonusKeys as unknown as string[]),
             ...newWeeklyKeys,

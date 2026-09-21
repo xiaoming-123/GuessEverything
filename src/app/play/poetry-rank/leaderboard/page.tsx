@@ -80,6 +80,11 @@ export default function LeaderboardPage() {
         </div>
       ) : (
         <>
+          {/* 赛季标签（P3-2：季度榜头部） */}
+          <p className="mb-3 text-center text-sm font-bold text-amber-700">
+            {view.seasonLabel}榜
+          </p>
+
           {/* 金榜（Top 100） */}
           <ol className="overflow-hidden rounded-2xl border border-amber-300 bg-amber-50/60">
             {view.items.map((e, i) => (
@@ -99,7 +104,7 @@ export default function LeaderboardPage() {
           {view.my ? (
             <div className="mt-4 rounded-2xl border border-amber-300 bg-white p-4">
               <p className="text-sm font-bold text-amber-700">
-                {view.my.rankLabel} · 功名 {view.my.totalExp}
+                {view.my.rankLabel} · 本季功名 {view.my.seasonExp}
                 <span className="ml-2 text-xs font-normal text-zinc-400">
                   名列第 {view.my.aboveCount + 1} 位
                 </span>
@@ -107,9 +112,9 @@ export default function LeaderboardPage() {
               <p className="mt-1 text-sm text-zinc-600">
                 {view.my.aboveCount === 0
                   ? "你高居金榜首位，无人可及。"
-                  : `与第 ${view.my.aboveCount} 位「${view.my.aboveName}」（${view.my.aboveLabel}）只有一卷之差（还差 ${Math.max(
+                  : `与第 ${view.my.aboveCount} 位「${view.my.aboveName}」（${view.my.aboveLabel}）只有一卷之差（本季还差 ${Math.max(
                       0,
-                      view.my.aboveExp - view.my.totalExp,
+                      view.my.aboveExp - view.my.seasonExp,
                     )} 功名）。`}
               </p>
             </div>
@@ -122,8 +127,25 @@ export default function LeaderboardPage() {
             </div>
           )}
 
+          {/* 我的往期战绩（P3-2 详设 §2.5：SeasonBoard 快照，无快照不渲染） */}
+          {view.past.length > 0 && (
+            <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-4">
+              <p className="text-sm font-bold text-zinc-700">📜 往期定格</p>
+              <ul className="mt-2 space-y-1">
+                {view.past.map((s) => (
+                  <li key={s.seasonKey} className="flex items-center justify-between text-xs text-zinc-500">
+                    <span>{s.label}</span>
+                    <span>
+                      {s.rankLabel} · 季功名 {s.seasonExp}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           <p className="mt-4 text-center text-xs text-zinc-400">
-            金榜按官阶 · 功名排序 · 架空称号路线（非真实官制）· 常青榜（无赛季重置）
+            金榜按本季功名 · 官阶排序 · 架空称号路线（非真实官制）· 官阶与累计功名常青不清零
           </p>
         </>
       )}
@@ -172,7 +194,7 @@ function BoardRow({
           )}
         </p>
         <p className="text-xs text-zinc-500">
-          {entry.rankLabel} · 功名 {entry.totalExp}
+          {entry.rankLabel} · 本季功名 {entry.seasonExp}
           {open && VIRTUAL_BIO[entry.name] && (
             <span className="mt-1 block text-amber-700">{VIRTUAL_BIO[entry.name]}</span>
           )}
