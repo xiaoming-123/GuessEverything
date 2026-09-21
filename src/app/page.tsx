@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { COVER_ART } from "@/lib/art-assets";
 
 const modes = [
   {
@@ -13,9 +14,17 @@ const modes = [
 export default function Home() {
   return (
     <main className="mx-auto max-w-md px-4 py-10">
-      <header className="text-center mb-10">
-        <h1 className="text-4xl font-bold tracking-wide mb-2">谜盒</h1>
-        <p className="text-zinc-500">诗词升官 · 连击翻倍 · 碎片开一局</p>
+      {/* 封面卡（阶段 6：标题已叠入图内，不再重复大标题） */}
+      <header className="mb-10">
+        {/* eslint-disable-next-line @next/next/no-img-element -- 本地静态封面，无需 next/image 优化 */}
+        <img
+          src={COVER_ART}
+          alt="谜盒 · 诗词升官 游戏封面"
+          className="w-full rounded-2xl border border-zinc-200 shadow-md"
+        />
+        <p className="mt-4 text-center text-zinc-500">
+          诗词升官 · 连击翻倍 · 碎片开一局
+        </p>
       </header>
 
       <section className="grid gap-4">

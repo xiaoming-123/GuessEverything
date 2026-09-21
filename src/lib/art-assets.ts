@@ -50,8 +50,8 @@ export function npcExpressionAsset(
   return k ? `/art/q_expr_${k}_${expression}.png` : null;
 }
 
-/** 封面（D5） */
-export const COVER_ART = "/art/cover_v1.png";
+/** 封面（阶段 6：v2 = v1 底图 + 真实字体标题层，scripts/cover-title.py 幂等生成） */
+export const COVER_ART = "/art/cover_v2.png";
 
 /** P2 NPC 立绘（详设 P2 方案 §1.2：同窗/内侍/说书人；组件只认本表返回的字符串） */
 export type ExtraNpcKey = "CLASSMATE" | "INATTENDANT" | "STORYTELLER";
