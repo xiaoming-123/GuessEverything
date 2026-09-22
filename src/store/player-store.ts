@@ -19,6 +19,7 @@ interface PlayerProfile {
 }
 
 const STORAGE_KEY = "mihe.player.v1";
+let playerPromise: Promise<void> | null = null;
 
 interface PlayerStore {
   playerId: string | null;
@@ -66,20 +67,27 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
   ensurePlayer: async () => {
     const { playerId } = get();
     if (playerId) return;
-    const local = loadLocal();
+    if (playerPromise) return playerPromise;
+    playerPromise = (async () => {
+      const local = loadLocal();
+      try {
+        const profile = await secureFetch<PlayerProfile>("/api/player", {
+          playerId: local.playerId ?? undefined,
+        });
+        saveLocal(profile.id);
+        set({
+          playerId: profile.id,
+          nickname: profile.nickname,
+          avatar: profile.avatar,
+        });
+      } catch {
+        // 注册失败由页面展示重试；不创建新的临时身份或静默丢弃存档。
+      }
+    })();
     try {
-      const profile = await secureFetch<PlayerProfile>("/api/player", {
-        playerId: local.playerId ?? undefined,
-      });
-      saveLocal(profile.id);
-      set({
-        playerId: profile.id,
-        nickname: profile.nickname,
-        avatar: profile.avatar,
-      });
-    } catch {
-      // DB 不可用（本地内存模式）/ 网络失败：匿名玩家档案是增强能力，
-      // 不应阻断对局——开局不带 playerId 即可，后续重试由再次调用负责
+      await playerPromise;
+    } finally {
+      playerPromise = null;
     }
   },
 
@@ -87,7 +95,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
     const { playerId } = get();
     if (!playerId) return;
     try {
-      const profile = await secureFetch<PlayerProfile>("/api/player", { playerId }, "PUT");
+      const profile = await secureFetch<PlayerProfile>(
+        "/api/player",
+        { playerId },
+        "PUT",
+      );
       set({
         nickname: profile.nickname,
         avatar: profile.avatar,

@@ -1,180 +1,154 @@
-"use client";
-
-/**
- * 分享卡视图（P2 详设 §3）：结算后 canvas 长图（750×1200），纯客户端零接口。
- *
- * - 文案拼装走纯函数 buildShareCardLines（可单测）；
- * - 立绘走 art-assets 常量表（同源 /art，canvas 不污染）；
- * - 红线：卡面不含题目 / 答案 / sourceKey（数据源仅 RankSummary 脱敏字段）。
- * - 立绘未就绪时按钮置灰重试，不静默。
- */
-
+﻿"use client";
+/* eslint-disable @next/next/no-img-element -- Canvas data URL 预览需支持手机长按保存。 */
 import { useEffect, useRef, useState } from "react";
 import { heroAssetFor } from "@/lib/art-assets";
 import { buildShareCardLines } from "@/lib/share-card";
 import type { RankSummary } from "@/lib/db/rank-service";
+import { Modal, StatusView } from "@/components/game-ui";
 
-interface ShareCardViewProps {
+export function ShareCardView({
+  summary,
+  badgeLabels,
+}: {
   summary: RankSummary;
-  /** 新达成成就 label（服务端 newBadges 查表后文案） */
   badgeLabels: string[];
-}
-
-const W = 750;
-const H = 1200;
-
-/** Asia/Shanghai 日期串（与 D2 月历同口径） */
-function todayKey(): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date());
-}
-
-function roundRect(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  r: number,
-) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-}
-
-export function ShareCardView({ summary, badgeLabels }: ShareCardViewProps) {
+}) {
+  const [open, setOpen] = useState(false);
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [ready, setReady] = useState(false);
-  const [dataUrl, setDataUrl] = useState<string | null>(null);
-
-  const lines = buildShareCardLines({
-    rankLabel: summary.rank.label,
-    accuracy: summary.accuracy,
-    expGained: summary.expGained,
-    totalExp: summary.totalExp,
-    newBadges: badgeLabels,
-    dateKey: todayKey(),
-  });
-  const heroSrc = heroAssetFor(summary.rankId, summary.rank.skins?.equipped ?? null);
-
+  const badges = badgeLabels.join("\n");
+  const heroSrc = heroAssetFor(
+    summary.rank.rankId,
+    summary.rank.skins?.equipped ?? null,
+  );
   useEffect(() => {
+    if (!open) return;
     let cancelled = false;
-    setDataUrl(null);
-    setReady(false);
-    const img = new Image();
-    img.onload = () => {
+    setUrl("");
+    setError("");
+    const image = new Image();
+    image.onload = () => {
       if (cancelled) return;
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-
-      // 背景：靛蓝渐变
-      const bg = ctx.createLinearGradient(0, 0, 0, H);
-      bg.addColorStop(0, "#1e1b4b");
-      bg.addColorStop(1, "#312e81");
-      ctx.fillStyle = bg;
-      ctx.fillRect(0, 0, W, H);
-
-      // 琥珀金描边框
-      ctx.strokeStyle = "rgba(251,191,36,0.85)";
-      ctx.lineWidth = 6;
-      roundRect(ctx, 24, 24, W - 48, H - 48, 28);
-      ctx.stroke();
-      ctx.strokeStyle = "rgba(251,191,36,0.35)";
-      ctx.lineWidth = 2;
-      roundRect(ctx, 40, 40, W - 80, H - 80, 20);
-      ctx.stroke();
-
-      // 标题
-      ctx.fillStyle = "#fbbf24";
-      ctx.font = "bold 54px sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText(lines.title, W / 2, 150);
-
-      // 立绘（圆角方形底 + 居中）
-      const hx = W / 2 - 180;
-      const hy = 220;
-      ctx.fillStyle = "rgba(255,255,255,0.06)";
-      roundRect(ctx, hx, hy, 360, 420, 24);
-      ctx.fill();
-      const scale = Math.min(360 / img.width, 420 / img.height);
-      const dw = img.width * scale;
-      const dh = img.height * scale;
-      ctx.drawImage(img, W / 2 - dw / 2, hy + (420 - dh) / 2, dw, dh);
-
-      // 官衔大标题
-      ctx.fillStyle = "#fde68a";
-      ctx.font = "bold 84px sans-serif";
-      ctx.fillText(summary.rank.label, W / 2, 760);
-
-      // 数据行（最坏 5 行：称号/正确率功名/累计/成就/日期；行距 56 保证与 footer 不重叠）
-      ctx.font = "40px sans-serif";
-      ctx.fillStyle = "#e0e7ff";
-      let ly = 830;
-      for (const l of lines.lines) {
-        ctx.fillText(l, W / 2, ly);
-        ly += 56;
-      }
-
-      // 架空声明（footer，与最后一行数据保持 ≥60px 间距）
-      ctx.fillStyle = "rgba(224,231,255,0.55)";
-      ctx.font = "28px sans-serif";
-      ctx.fillText(lines.footer, W / 2, H - 80);
-
-      if (!cancelled) {
-        setDataUrl(canvas.toDataURL("image/png"));
-        setReady(true);
+      try {
+        const canvas = canvasRef.current;
+        const ctx = canvas?.getContext("2d");
+        if (!canvas || !ctx)
+          throw new Error("当前设备暂不支持分享图，请稍后重试。");
+        const width = 750,
+          height = 1200;
+        const lines = buildShareCardLines({
+          rankLabel: summary.rank.label,
+          accuracy: summary.accuracy,
+          expGained: summary.expGained,
+          totalExp: summary.totalExp,
+          newBadges: badges ? badges.split("\n") : [],
+          dateKey: new Intl.DateTimeFormat("sv-SE", {
+            timeZone: "Asia/Shanghai",
+          }).format(new Date()),
+        });
+        ctx.fillStyle = "#f5f0e5";
+        ctx.fillRect(0, 0, width, height);
+        ctx.strokeStyle = "#b39662";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(28, 28, width - 56, height - 56);
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#a46842";
+        ctx.font = "24px serif";
+        ctx.fillText("重 生 · 以诗为阶", width / 2, 96);
+        ctx.fillStyle = "#30394e";
+        ctx.font = "bold 46px serif";
+        ctx.fillText("我靠诗词", width / 2, 162);
+        ctx.fillText("问鼎天下", width / 2, 224);
+        const scale = Math.min(380 / image.width, 420 / image.height);
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(185, 670);
+        ctx.lineTo(185, 440);
+        ctx.arc(375, 440, 190, Math.PI, 0);
+        ctx.lineTo(565, 670);
+        ctx.closePath();
+        ctx.fillStyle = "#25394e";
+        ctx.fill();
+        ctx.clip();
+        ctx.drawImage(
+          image,
+          (width - image.width * scale) / 2,
+          250,
+          image.width * scale,
+          image.height * scale,
+        );
+        ctx.restore();
+        ctx.fillStyle = "#9b773e";
+        ctx.font = "bold 62px serif";
+        ctx.fillText(summary.rank.label, width / 2, 750);
+        let y = 818;
+        for (const line of lines.lines) {
+          let size = 30;
+          ctx.font = `${size}px sans-serif`;
+          while (ctx.measureText(line).width > 630 && size > 18)
+            ctx.font = `${--size}px sans-serif`;
+          ctx.fillStyle = "#616359";
+          ctx.fillText(line, width / 2, y);
+          y += 48;
+        }
+        ctx.font = "22px sans-serif";
+        ctx.fillStyle = "#827c70";
+        ctx.fillText(lines.footer, width / 2, 1132);
+        setUrl(canvas.toDataURL("image/png"));
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : "分享图生成失败，请重试。",
+        );
       }
     };
-    img.onerror = () => {
-      if (!cancelled) setReady(false);
+    image.onerror = () => {
+      if (!cancelled) setError("人物图片未能载入，请重试。");
     };
-    img.src = heroSrc;
+    image.src = heroSrc;
     return () => {
       cancelled = true;
     };
-  }, [heroSrc, summary.rank.label, summary.rankId, summary.accuracy, summary.expGained, summary.totalExp, lines]);
-
-  const download = () => {
-    const a = document.createElement("a");
-    a.href = dataUrl ?? canvasRef.current?.toDataURL("image/png") ?? "";
-    a.download = `mihe-share-${summary.rank.label}.png`;
-    a.click();
-  };
-
+  }, [
+    open,
+    attempt,
+    heroSrc,
+    summary.rank.label,
+    summary.accuracy,
+    summary.expGained,
+    summary.totalExp,
+    badges,
+  ]);
   return (
-    <div className="mt-4">
-      <button
-        type="button"
-        onClick={download}
-        disabled={!ready}
-        className={
-          ready
-            ? "w-full rounded-2xl bg-amber-500 py-3 text-base font-bold text-white shadow active:scale-[0.99]"
-            : "w-full rounded-2xl border border-zinc-200 bg-zinc-50 py-3 text-sm text-zinc-400"
-        }
-      >
-        📸 {ready ? "生成分享图" : "分享图生成中…"}
+    <>
+      <button className="share-entry" onClick={() => setOpen(true)}>
+        ↗ 分享这一世
       </button>
-      {/* canvas 生成的 data URL：next/image 对超大 dataURL 有内存开销，用原生 img 渲染 */}
-      {dataUrl && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={dataUrl}
-          alt="分享卡预览"
-          className="mt-3 w-full rounded-xl border border-zinc-200"
-        />
+      {open && (
+        <Modal title="把这一卷，留作纪念" onClose={() => setOpen(false)}>
+          {!url ? (
+            <StatusView
+              error={error}
+              loading="正在落款成画…"
+              onRetry={() => setAttempt((x) => x + 1)}
+            />
+          ) : (
+            <>
+              <img className="share-preview" src={url} alt="本局成长分享图" />
+              <a
+                className="button gold"
+                href={url}
+                download={`诗词逆命-${summary.rank.label}.png`}
+              >
+                保存分享图
+              </a>
+              <p className="fine-print">也可长按图片保存，再分享给好友。</p>
+            </>
+          )}
+          <canvas hidden ref={canvasRef} width={750} height={1200} />
+        </Modal>
       )}
-      <canvas ref={canvasRef} width={W} height={H} className="hidden" />
-    </div>
+    </>
   );
 }

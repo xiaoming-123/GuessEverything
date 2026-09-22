@@ -1,15 +1,18 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import { BRAND } from "@/lib/brand";
 
 export const metadata: Metadata = {
-  title: "谜盒 · 万物皆可猜",
-  description: "从名句猜诗词、从作品猜演员、从描述猜万物",
+  title: BRAND.name,
+  description: BRAND.description,
+  applicationName: BRAND.shortName,
 };
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
+  viewportFit: "cover",
+  themeColor: "#242c43",
 };
 
 export default function RootLayout({
@@ -19,9 +22,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN">
-      <body className="antialiased bg-zinc-50 text-zinc-900 min-h-dvh">
-        {children}
-      </body>
+      <body className="antialiased">{children}</body>
     </html>
   );
 }

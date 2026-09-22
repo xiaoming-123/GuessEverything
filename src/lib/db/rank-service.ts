@@ -1318,7 +1318,7 @@ export async function getLedgerView(playerId: string): Promise<LedgerView> {
   // 近 10 局（最新在后 → 柱状图从左到右时间正序；recentGames 是最新在前，此处反向）
   const recent10 = await prisma.gameSession.findMany({
     where: { playerId, kind: "RANKED", status: "FINISHED" },
-    orderBy: { createdAt: "asc" },
+    orderBy: { createdAt: "desc" },
     take: 10,
     select: { stage: true, score: true },
   });
@@ -1327,7 +1327,7 @@ export async function getLedgerView(playerId: string): Promise<LedgerView> {
     daily: view.daily,
     totalExp: view.totalExp,
     seenCount: view.seenCount,
-    recentBars: recent10.map((s) => ({ kind: kindOfStage(s.stage), exp: s.score })),
+    recentBars: recent10.reverse().map((s) => ({ kind: kindOfStage(s.stage), exp: s.score })),
   };
 }
 

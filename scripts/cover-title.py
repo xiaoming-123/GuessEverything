@@ -3,10 +3,12 @@
 幂等可重跑；字体=系统楷体（避免 AI 生图伪汉字）。用法：
   D:/soft/conda/python.exe C:/Project/Ai/GuessEverything/scripts/cover-title.py
 """
+from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
-SRC = r"C:/Project/Ai/GuessEverything/public/art/cover_v1.png"
-DST = r"C:/Project/Ai/GuessEverything/public/art/cover_v2.png"
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "public/art/cover_v1.png"
+DST = ROOT / "public/art/cover_v2.png"
 KAI = r"C:/Windows/Fonts/simkai.ttf"
 HEI = r"C:/Windows/Fonts/simhei.ttf"
 
@@ -23,9 +25,9 @@ def draw_title_layer(img: Image.Image) -> Image.Image:
     overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(overlay)
 
-    # ---- 主标题「谜盒」（上部天空区居中；楷体，金渐层由描边+双层模拟） ----
-    f_main = ImageFont.truetype(KAI, 168)
-    text = "谜盒"
+    # ---- 主标题「我靠诗词」（上部天空区居中；楷体，金渐层由描边+双层模拟） ----
+    f_main = ImageFont.truetype(KAI, 110)
+    text = "我靠诗词"
     tb = d.textbbox((0, 0), text, font=f_main)
     tw, th = tb[2] - tb[0], tb[3] - tb[1]
     x = (W - tw) // 2 - tb[0]
@@ -42,9 +44,9 @@ def draw_title_layer(img: Image.Image) -> Image.Image:
     overlay = Image.composite(hi, overlay, clip)
     d = ImageDraw.Draw(overlay)
 
-    # ---- 副标题「诗词升官」 ----
+    # ---- 副标题「重生 · 问鼎天下」 ----
     f_sub = ImageFont.truetype(KAI, 58)
-    sub = "诗词升官"
+    sub = "重生 · 问鼎天下"
     sb = d.textbbox((0, 0), sub, font=f_sub)
     sw = sb[2] - sb[0]
     sx = (W - sw) // 2 - sb[0]

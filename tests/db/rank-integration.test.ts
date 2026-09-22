@@ -38,6 +38,13 @@ import {
 } from "@/lib/games/poetry/types";
 import seedJson from "@/lib/data/poetry-seed.json";
 
+// 基础结算测试固定无活动，避免真实日期改变倍率；活动计算有独立集成覆盖。
+vi.mock("@/lib/games/poetry/events", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/games/poetry/events")>(),
+  eventForDate: () => null,
+  activeEvent: () => null,
+}));
+
 /* ------------------------------------------------------------------ */
 /* 临时库（必须在所有业务模块导入前完成：vi.hoisted 先于 import 执行）  */
 /* ------------------------------------------------------------------ */
@@ -700,6 +707,17 @@ describe("诗词升官 · D2 每日题 / 成就 / 功名簿", () => {
     expect(todayCell).toBeDefined();
     // 成就：首局后已获 FIRST_PRACTICE 等
     expect(ledger.badges).toContain("FIRST_PRACTICE");
+  });
+
+  it("功名簿展示最近十局，并按时间正序排列", async () => {
+    const playerId = await makePlayer();
+    await prisma.gameSession.createMany({ data: Array.from({ length: 12 }, (_, i) => ({
+      playerId, mode: "POETRY", kind: "RANKED", stage: "PRACTICE", status: "FINISHED",
+      rounds: [], roundCount: 10, score: i + 1,
+      createdAt: new Date(Date.UTC(2026, 8, 14, 0, i)), expiresAt: new Date(Date.UTC(2026, 8, 14, 1, i)),
+    })) });
+    const ledger = await getLedgerView(playerId);
+    expect(ledger.recentBars.map(bar => bar.exp)).toEqual([3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
   });
 
   it("补签 makeUpDaily：上月缺答日可补签，本月配额用尽后 403", async () => {

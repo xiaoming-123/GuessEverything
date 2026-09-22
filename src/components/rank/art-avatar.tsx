@@ -7,6 +7,8 @@
  * 容器尺寸由调用方 className 决定；图片 object-contain 居中铺满容器。
  */
 
+import { useEffect, useState } from "react";
+
 interface ArtAvatarProps {
   src: string;
   /** 容器类（尺寸/圆角/背景） */
@@ -25,14 +27,19 @@ export function ArtAvatar({
   emojiClassName = "text-2xl",
   alt = "立绘",
 }: ArtAvatarProps) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [src]);
   const isImage = src.startsWith("/") || src.startsWith("http");
-  if (isImage) {
+  if (isImage && !failed) {
     return (
-      <div className={`flex items-center justify-center overflow-hidden ${containerClassName}`}>
+      <div
+        className={`flex items-center justify-center overflow-hidden ${containerClassName}`}
+      >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={src}
           alt={alt}
+          onError={() => setFailed(true)}
           className={`h-full w-full object-contain ${imgClassName}`}
         />
       </div>
@@ -40,7 +47,13 @@ export function ArtAvatar({
   }
   return (
     <div className={`flex items-center justify-center ${containerClassName}`}>
-      <span className={emojiClassName}>{src}</span>
+      <span
+        className={emojiClassName}
+        role={failed ? "img" : undefined}
+        aria-label={failed ? alt : undefined}
+      >
+        {failed ? "✧" : src}
+      </span>
     </div>
   );
 }

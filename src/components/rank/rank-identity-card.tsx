@@ -1,67 +1,52 @@
-"use client";
-
-/**
- * 身份卡（D1，详设 §1.4）
- *
- * 当前阶 Q 版立绘（D5 前 emoji 占位）+ 大号称号 + 副标题
- * + 功名估算：est = ceil(expToNext / avgExp)，avgExp = 最近 3 局 expGained 均值
- *   （数据源 RankView.recentGames，D1 交付；不足 3 局用全部，无局则不显示估算行）。
- */
-
+﻿"use client";
 import { heroAssetFor } from "@/lib/art-assets";
 import { ArtAvatar } from "./art-avatar";
 import type { RankView } from "@/lib/db/rank-service";
 
 export function RankIdentityCard({ rank }: { rank: RankView }) {
-  // P3-1：穿戴皮肤渲染（equipped 与 rankId 不匹配时 heroAssetFor 自动回退默认立绘）
-  const avatar = heroAssetFor(rank.rankId, rank.skins?.equipped ?? null);
-  const isEmperor = rank.ranks[rank.rankId]?.isEmperor ?? false;
-  const games = rank.recentGames ?? [];
-
-  // 功名估算：近 3 局均值（无局不显示估算行，详设 §1.4）
-  let est: number | null = null;
-  if (!isEmperor && rank.expToNext > 0 && games.length > 0) {
-    const avgExp = Math.round(games.reduce((s, g) => s + g.expGained, 0) / games.length);
-    if (avgExp > 0) est = Math.max(1, Math.ceil(rank.expToNext / avgExp));
-  }
-
-  // 最近战绩行（recentGames[0] + seenCount，D1 交付）
-  const last = games[0];
-
+  const required = rank.totalExp + rank.expToNext;
+  const progress =
+    rank.nextUnlocked || rank.rankId === 10
+      ? 100
+      : required
+        ? Math.min(100, (rank.totalExp / required) * 100)
+        : 0;
   return (
-    <div className="rounded-2xl border border-indigo-200 bg-white p-4 shadow-sm">
-      <div className="flex items-center gap-3">
-        <ArtAvatar
-          src={avatar}
-          containerClassName="h-16 w-16 shrink-0 rounded-2xl border border-indigo-100 bg-indigo-50"
-        />
-        <div className="min-w-0 flex-1">
-          <p className="text-2xl font-bold leading-tight text-indigo-700">{rank.label}</p>
-          <p className="mt-0.5 truncate text-xs text-zinc-500">{rank.subtitle}</p>
-          <p className="mt-1 text-sm text-indigo-500 tabular-nums">
-            功名 {rank.totalExp}
-            {!isEmperor && rank.expToNext > 0 && (
-              <span className="text-zinc-400"> · 功名积攒中</span>
-            )}
-          </p>
+    <section className="identity-scene" aria-label="当前身份">
+      <div className="identity-copy">
+        <span className="eyebrow">这一世 · 我的官途</span>
+        <h1>{rank.label}</h1>
+        <p>{rank.subtitle}</p>
+        <div className="identity-exp">
+          <strong>{rank.totalExp.toLocaleString()}</strong>
+          <span>功名</span>
         </div>
       </div>
-
-      {isEmperor && (
-        <p className="mt-3 text-sm text-amber-600">👑 位极人臣，已登天子（架空称号终点）</p>
-      )}
-      {est !== null && (
-        <p className="mt-3 text-xs text-zinc-500">
-          预计约 {est} 局研习可赴下一场科考
-          <span className="ml-1 text-zinc-400">（按近 {games.length} 局均值）</span>
+      <div className="hero-halo" aria-hidden="true" />
+      <ArtAvatar
+        src={heroAssetFor(rank.rankId, rank.skins?.equipped ?? null)}
+        alt={`${rank.label}形象`}
+        containerClassName="identity-hero"
+      />
+      <div className="identity-progress">
+        <div
+          className="progress-track"
+          role="progressbar"
+          aria-label="晋升功名进度"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(progress)}
+        >
+          <span style={{ width: `${progress}%` }} />
+        </div>
+        <p>
+          {rank.rankId === 10
+            ? "这一世，已写下新的传奇"
+            : rank.nextUnlocked
+              ? "功名已足，可以赴考"
+              : `再积 ${rank.expToNext.toLocaleString()} 功名，即可赴考`}
         </p>
-      )}
-      {last && (
-        <p className="mt-1 text-xs text-zinc-500">
-          上一局 {last.kind === "EXAM" ? "科考" : last.kind === "DAILY" ? "每日题" : "研习"} ·
-          正确率 {last.accuracy}% · +{last.expGained} 功名 · 已见 {rank.seenCount} 题
-        </p>
-      )}
-    </div>
+      </div>
+    </section>
   );
 }

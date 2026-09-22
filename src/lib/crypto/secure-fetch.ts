@@ -7,11 +7,8 @@
  * 内部自动完成：密钥交换（懒加载一次）→ AES-256-GCM 加密请求 → 解密响应。
  */
 
-import {
-  ENVELOPE_VERSION,
-  Envelope,
-  KeyExchangeResponse,
-} from "./protocol";
+import { ENVELOPE_VERSION, Envelope, KeyExchangeResponse } from "./protocol";
+import { fetchWithTimeout } from "../fetch-with-timeout";
 
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
@@ -43,7 +40,9 @@ function randomHex(bytes: number): string {
 /** 懒加载密钥交换：客户端生成 AES 密钥并经服务端公钥封装 */
 async function ensureSession(): Promise<SecureSession> {
   sessionPromise ??= (async () => {
-    const res = await fetch("/api/crypto/key", { cache: "no-store" });
+    const res = await fetchWithTimeout("/api/crypto/key", {
+      cache: "no-store",
+    });
     if (!res.ok) throw new Error("密钥交换失败");
     const { sessionId, publicKey } = (await res.json()) as KeyExchangeResponse;
 
@@ -75,7 +74,10 @@ async function ensureSession(): Promise<SecureSession> {
       wrappedKey: toBase64(wrapped),
       keySent: false,
     };
-  })();
+  })().catch((error) => {
+    sessionPromise = null;
+    throw error;
+  });
   return sessionPromise;
 }
 
@@ -115,7 +117,8 @@ export async function secureFetch<T>(
   const envelope: Envelope = {
     v: ENVELOPE_VERSION,
     sessionId: session.sessionId,
-    key: session.keySent ? null : session.wrappedKey,
+    // 始终携带封装密钥，避免并发首请求 / 网络丢包导致后续请求无法解密。
+    key: session.wrappedKey,
     iv: toBase64(iv),
     tag: toBase64(tag),
     ts: Date.now(),
@@ -124,7 +127,7 @@ export async function secureFetch<T>(
   };
   session.keySent = true;
 
-  const res = await fetch(path, {
+  const res = await fetchWithTimeout(path, {
     method,
     headers: { "content-type": "application/json" },
     body: JSON.stringify(envelope),

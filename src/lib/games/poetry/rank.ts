@@ -55,17 +55,17 @@ export interface RankSpec {
  * 科考窗口上沿高于研习窗口上沿。
  */
 export const RANKS: RankSpec[] = [
-  { id: 0, key: "BUYI", label: "布衣", subtitle: "未入学的平民，识字读书的起点", difficulty: 1, gradeWindow: [1, 3], examWindow: [1, 4], expToReach: 0 },
-  { id: 1, key: "TONGSHENG", label: "童生", subtitle: "县试初试，得入学宫", difficulty: 2, gradeWindow: [1, 4], examWindow: [2, 5], expToReach: 2000 },
-  { id: 2, key: "XIUCAI", label: "秀才", subtitle: "府院试中式，得入士籍", difficulty: 3, gradeWindow: [2, 5], examWindow: [3, 6], expToReach: 5000 },
-  { id: 3, key: "JUREN", label: "举人", subtitle: "乡试中举，「三十老诸生」", difficulty: 4, gradeWindow: [3, 7], examWindow: [4, 8], expToReach: 10000 },
-  { id: 4, key: "GONGSHI", label: "贡士", subtitle: "会试中式，待殿试", difficulty: 5, gradeWindow: [5, 8], examWindow: [6, 9], expToReach: 18000 },
-  { id: 5, key: "JINSHI", label: "进士", subtitle: "殿试金榜，「三十进士」", difficulty: 6, gradeWindow: [7, 9], examWindow: [7, 10], expToReach: 30000 },
-  { id: 6, key: "HANLIN", label: "翰林", subtitle: "庶吉士散馆，入翰林院", difficulty: 7, gradeWindow: [8, 11], examWindow: [9, 11], expToReach: 48000, preferCold: true },
-  { id: 7, key: "ZHIFU", label: "知府", subtitle: "出京外放，一府之尊", difficulty: 8, gradeWindow: [10, 12], examWindow: [10, 12], expToReach: 72000, preferCold: true },
-  { id: 8, key: "SHILANG", label: "侍郎", subtitle: "入阁行走，二品大员", difficulty: 9, gradeWindow: [10, 12], examWindow: [11, 12], expToReach: 108000, preferCold: true },
-  { id: 9, key: "CHENGXIANG", label: "丞相", subtitle: "入阁拜相，位极人臣", difficulty: 10, gradeWindow: [11, 12], examWindow: [12, 12], expToReach: 156000, preferCold: true },
-  { id: 10, key: "DIWANG", label: "皇帝", subtitle: "登极大考，天子（隐藏 Boss）", difficulty: 11, gradeWindow: [12, 12], examWindow: [12, 12], expToReach: 0, isBoss: true, isEmperor: true, preferCold: true },
+  { id: 0, key: "BUYI", label: "布衣", subtitle: "重活一世，从白身再起", difficulty: 1, gradeWindow: [1, 3], examWindow: [1, 4], expToReach: 0 },
+  { id: 1, key: "TONGSHENG", label: "童生", subtitle: "这一回，先叩开求学之门", difficulty: 2, gradeWindow: [1, 4], examWindow: [2, 5], expToReach: 2000 },
+  { id: 2, key: "XIUCAI", label: "秀才", subtitle: "纸上有名，命运开始不同", difficulty: 3, gradeWindow: [2, 5], examWindow: [3, 6], expToReach: 5000 },
+  { id: 3, key: "JUREN", label: "举人", subtitle: "此番登榜，不负重来一世", difficulty: 4, gradeWindow: [3, 7], examWindow: [4, 8], expToReach: 10000 },
+  { id: 4, key: "GONGSHI", label: "贡士", subtitle: "再向前一步，便是更大天地", difficulty: 5, gradeWindow: [5, 8], examWindow: [6, 9], expToReach: 18000 },
+  { id: 5, key: "JINSHI", label: "进士", subtitle: "金榜题名，终于写下我的名字", difficulty: 6, gradeWindow: [7, 9], examWindow: [7, 10], expToReach: 30000 },
+  { id: 6, key: "HANLIN", label: "翰林", subtitle: "手中这支笔，也能写出前程", difficulty: 7, gradeWindow: [8, 11], examWindow: [9, 11], expToReach: 48000, preferCold: true },
+  { id: 7, key: "ZHIFU", label: "知府", subtitle: "从无名布衣，到独当一面", difficulty: 8, gradeWindow: [10, 12], examWindow: [10, 12], expToReach: 72000, preferCold: true },
+  { id: 8, key: "SHILANG", label: "侍郎", subtitle: "走到此处，我还要再进一步", difficulty: 9, gradeWindow: [10, 12], examWindow: [11, 12], expToReach: 108000, preferCold: true },
+  { id: 9, key: "CHENGXIANG", label: "丞相", subtitle: "曾经遥望的位置，如今已在脚下", difficulty: 10, gradeWindow: [11, 12], examWindow: [12, 12], expToReach: 156000, preferCold: true },
+  { id: 10, key: "DIWANG", label: "皇帝", subtitle: "这一世，终以诗词问鼎天下", difficulty: 11, gradeWindow: [12, 12], examWindow: [12, 12], expToReach: 0, isBoss: true, isEmperor: true, preferCold: true },
 ];
 
 /** 皇帝官阶 id */

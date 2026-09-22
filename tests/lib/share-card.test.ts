@@ -16,7 +16,7 @@ describe("buildShareCardLines", () => {
       newBadges: [],
       dateKey: "2026-09-21",
     });
-    expect(out.title).toBe("谜盒 · 诗词升官");
+    expect(out.title).toBe("重生：我靠诗词问鼎天下");
     expect(out.lines).toContain("官衔：秀才");
     expect(out.lines).toContain("正确率 70% · 本局功名 +1400");
     expect(out.lines).toContain("累计功名 5200");

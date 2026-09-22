@@ -1,3 +1,5 @@
+import { BRAND } from "./brand";
+
 /**
  * 分享卡文案 · 纯逻辑层（P2 详设 §3.2）
  *
@@ -47,7 +49,7 @@ export function buildShareCardLines(input: ShareCardInput): ShareCardLines {
     );
   }
   return {
-    title: "谜盒 · 诗词升官",
+    title: BRAND.name,
     lines: [
       `官衔：${input.rankLabel}`,
       `正确率 ${input.accuracy}% · 本局功名 +${input.expGained}`,

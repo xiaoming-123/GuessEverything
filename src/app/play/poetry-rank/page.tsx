@@ -1,17 +1,6 @@
-"use client";
+﻿"use client";
 
-/**
- * 诗词升官 · 官途页（阶段 C 前端）
- *
- * - 官途主页：路线图 + 功名条 + 研习/科考入口（功名不达标时科考置灰并注明缺口）
- * - 对局：复用 quiz 组件（HUD 倒计时 / 选项 / 判题反馈 / 自动翻题），indigo 主题
- * - 结算：功名入账 + 晋升结果 + 失败重考 + 缺题提示
- * - 刷新恢复：进入页面先查未完成官阶局，从首个未答轮次继续
- *
- * 权威数据（功名/官阶/判题）均来自服务端；DB 不可用时 503 提示，不做内存兜底。
- */
-
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { secureFetch } from "@/lib/crypto/secure-fetch";
 import { getRoundTimeMs } from "@/lib/games/timing";
@@ -29,49 +18,57 @@ import { localPlayerId, usePlayerStore } from "@/store/player-store";
 import { RankRoad } from "@/components/rank/rank-road";
 import { RankIdentityCard } from "@/components/rank/rank-identity-card";
 import { RankSettleView } from "@/components/rank/rank-settle-view";
-import { PersonaBubble } from "@/components/rank/persona-bubble";
-import { ArtAvatar } from "@/components/rank/art-avatar";
-import { EXTRA_NPC_AVATARS } from "@/lib/art-assets";
 import { ShareCardView } from "@/components/share-card-view";
 import { ACHIEVEMENT_BY_KEY } from "@/lib/games/poetry/achievements";
 import { QuizHUD } from "@/components/quiz/quiz-hud";
-import { DialogueChoices } from "@/components/quiz/dialogue-choices";
+import { AdaptiveChoice } from "@/components/quiz/adaptive-choice";
 import { useAutoNext } from "@/components/quiz/use-auto-next";
+import {
+  GameShell,
+  Modal,
+  PagedItems,
+  PagedText,
+  StatusView,
+} from "@/components/game-ui";
+import { BRAND } from "@/lib/brand";
+import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 
 const KIND_LABEL: Record<RankKind, string> = {
   PRACTICE: "研习",
   EXAM: "科考",
   DAILY: "每日题",
 };
+const PROLOGUE_KEY = "rebirth-prologue:v1";
+const QUESTION_LABEL: Record<string, string> = {
+  GUESS_POET: "这句诗的作者是？",
+  GUESS_TITLE: "这句诗出自哪首作品？",
+  COMPLETE_NEXT: "请接出下一句",
+  FILL_CHAR: "哪一个字，恰好填入空缺？",
+  DYNASTY_PICK: "这句诗出自哪个朝代？",
+};
 
-/**
- * 限时事件横幅（P2 详设 §2.3）：内侍播报 + tagline + 倍率 + 倒计时（纯展示）。
- * 数据源 RankView.event（服务端权威计算，客户端零判定）。
- */
-function EventBanner({ event }: { event: NonNullable<RankView["event"]> }) {
+function EventLine({ event }: { event: RankView["event"] }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(t);
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
   }, []);
-  const left = Math.max(0, event.endsAt - now);
-  const hh = Math.floor(left / 3_600_000);
-  const mm = Math.floor((left % 3_600_000) / 60_000);
-  const ss = Math.floor((left % 60_000) / 1000);
-  const remain = `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
-  return (
-    <div className="mt-4 flex items-center gap-3 rounded-2xl border border-amber-300 bg-amber-50 p-3">
-      <ArtAvatar
-        src={EXTRA_NPC_AVATARS.INATTENDANT}
-        containerClassName="h-10 w-10 shrink-0 rounded-full border border-amber-200 bg-white"
-      />
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-bold text-amber-700">
-          🏮 {event.name} · 功名 ×{event.expMultiplier}
-        </p>
-        <p className="truncate text-xs text-amber-600/80">{event.tagline}</p>
+  if (!event || event.endsAt <= now)
+    return (
+      <div className="event-slot">
+        <span>一字一句，皆是向上的阶梯。</span>
+        <span aria-hidden="true">✧</span>
       </div>
-      <span className="shrink-0 text-xs font-bold tabular-nums text-amber-600">{remain}</span>
+    );
+  const minutes = Math.max(0, Math.ceil((event.endsAt - now) / 60_000));
+  return (
+    <div className="event-slot">
+      <span>
+        {event.name} · 研习功名 ×{event.expMultiplier}
+      </span>
+      <span>
+        {Math.floor(minutes / 60)}时{minutes % 60}分
+      </span>
     </div>
   );
 }
@@ -79,529 +76,559 @@ function EventBanner({ event }: { event: NonNullable<RankView["event"]> }) {
 export default function PoetryRankPage() {
   const s = useRankGameStore();
   const [rank, setRank] = useState<RankView | null>(null);
-  const [loadingRank, setLoadingRank] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [panel, setPanel] = useState<
+    "more" | "guess" | "prologue" | "feedback" | "record" | "option" | null
+  >(null);
+  const [readingOption, setReadingOption] = useState(0);
+  const [guessResult, setGuessResult] = useState<{
+    correct: boolean;
+    gained: number;
+  } | null>(null);
+  const [guessBusy, setGuessBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [hintBusy, setHintBusy] = useState(false);
+  const initialization = useRef(0);
 
-  // 拉取官阶视图（功名条 / 路线图数据源）
-  const loadRank = useCallback(async (): Promise<RankView | null> => {
-    let pid = usePlayerStore.getState().playerId ?? localPlayerId();
-    if (!pid) {
-      await usePlayerStore.getState().ensurePlayer();
-      pid = usePlayerStore.getState().playerId;
-    }
-    if (!pid) return null;
+  const loadRank = useCallback(async () => {
+    await usePlayerStore.getState().ensurePlayer();
+    const pid = usePlayerStore.getState().playerId ?? localPlayerId();
+    if (!pid) throw new Error("暂时无法连接书院，请检查网络后重试。");
+    const res = await fetchWithTimeout(
+      `/api/games/poetry/rank?playerId=${encodeURIComponent(pid)}`,
+      { cache: "no-store" },
+    );
+    if (!res.ok) throw new Error("官途暂未载入，已有进度不会丢失，请重试。");
+    const view = (await res.json()) as RankView;
+    setRank(view);
+    return { view, pid };
+  }, []);
+
+  const initialize = useCallback(async () => {
+    const version = ++initialization.current;
+    setLoading(true);
+    setLoadError("");
     try {
-      const res = await fetch(`/api/games/poetry/rank?playerId=${encodeURIComponent(pid)}`);
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error(body?.error?.message ?? "官阶视图加载失败");
-      }
-      const view = (await res.json()) as RankView;
-      setRank(view);
-      return view;
-    } catch {
-      return null;
-    }
-  }, []);
-
-  // 进入页面：初始化玩家 → 拉官阶 → 尝试刷新恢复未完成官阶局
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      // 后台刷新玩家档案（幂等；store 未落盘时从 localStorage 取 id 补档）。
-      void usePlayerStore.getState().ensurePlayer();
-      const view = await loadRank();
-      if (cancelled) return;
-      setLoadingRank(false);
-      if (!view) return;
-      // 与 loadRank / startGame 同口径：store 未落盘时回落到 localStorage 同步读。
-      // 不能只读 usePlayerStore.getState().playerId——ensurePlayer 的落盘是异步的，
-      // 仅读 store 会在刷新恢复时拿到 null 而静默跳过 resume。
-      const pid = usePlayerStore.getState().playerId ?? localPlayerId();
-      if (!pid) return;
-      try {
-        const resumed = await secureFetch<Partial<RankedResumeView>>(
-          "/api/games/poetry/rank/resume",
-          { playerId: pid },
-        );
-        if (cancelled || !resumed.gameSessionId) return;
+      const { view, pid } = await loadRank();
+      if (version !== initialization.current) return;
+      const existing = useRankGameStore.getState();
+      if (["PLAYING", "REVEAL", "FINISHED"].includes(existing.phase)) return;
+      const resumed = await secureFetch<Partial<RankedResumeView>>(
+        "/api/games/poetry/rank/resume",
+        { playerId: pid },
+      );
+      if (version !== initialization.current) return;
+      if (resumed.gameSessionId) {
         useRankGameStore.getState().resume(resumed as RankedResumeView, view);
-      } catch {
-        /* 无未完成对局或网络失败：回落到官途主页 */
+        return;
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // 开局（研习 / 科考 / 每日题）
-  const startGame = useCallback(
-    async (kind: "PRACTICE" | "EXAM" | "DAILY") => {
-      const st = useRankGameStore.getState();
-      st.reset();
-      useRankGameStore.setState({ phase: "LOADING", kind });
+      useRankGameStore.getState().reset();
       try {
-        let pid = usePlayerStore.getState().playerId ?? localPlayerId();
-        if (!pid) {
-          await usePlayerStore.getState().ensurePlayer();
-          pid = usePlayerStore.getState().playerId;
-        }
-        if (!pid) throw new Error("玩家初始化失败，请重试");
-        const view = await secureFetch<RankedStartView>(
-          "/api/games/poetry/rank/start",
-          { playerId: pid, kind },
-        );
-        useRankGameStore.getState().startGame(view);
-      } catch (err) {
-        useRankGameStore.getState().setError(
-          err instanceof Error ? err.message : "开局失败，请重试",
-        );
+        if (!localStorage.getItem(PROLOGUE_KEY)) setPanel("prologue");
+      } catch {
+        /* 存储不可用仍能游玩 */
       }
-    },
-    [],
-  );
+    } catch {
+      if (version === initialization.current)
+        setLoadError("官途暂未载入，请检查网络后重试。进度会为你保留。");
+    } finally {
+      if (version === initialization.current) setLoading(false);
+    }
+  }, [loadRank]);
+  useEffect(() => {
+    void initialize();
+    const version = initialization.current;
+    return () => {
+      initialization.current = version + 1;
+    };
+  }, [initialize]);
 
-  // 作答（choice=null 且 timeout=true 表示倒计时耗尽）
+  const startGame = async (kind: RankKind) => {
+    if (useRankGameStore.getState().phase === "LOADING") return;
+    setPanel(null);
+    setNotice("");
+    useRankGameStore.setState({ phase: "LOADING", kind });
+    try {
+      await usePlayerStore.getState().ensurePlayer();
+      const playerId = usePlayerStore.getState().playerId ?? localPlayerId();
+      if (!playerId) throw new Error("身份未载入，请返回官途重试。");
+      const view = await secureFetch<RankedStartView>(
+        "/api/games/poetry/rank/start",
+        { playerId, kind },
+      );
+      useRankGameStore.getState().startGame(view);
+    } catch (err) {
+      useRankGameStore
+        .getState()
+        .setError(err instanceof Error ? err.message : "出题失败，请重试。");
+    }
+  };
   const answer = useCallback(async (choice: number | null, timeout = false) => {
     const st = useRankGameStore.getState();
     if (st.phase !== "PLAYING" || !st.gameSessionId || st.submitting) return;
-    useRankGameStore.setState({
-      submitting: true,
-      ...(timeout ? {} : { selectedOption: choice }),
-    });
-    const timeMs = Date.now() - st.roundStartedAt;
+    useRankGameStore.setState({ submitting: true, selectedOption: choice });
     try {
       const judge = await secureFetch<RankedJudgeView>(
         "/api/games/poetry/rank/answer",
         {
           gameSessionId: st.gameSessionId,
           roundIndex: st.currentIndex,
-          timeMs,
-          ...(timeout ? { timeout: true } : { choice: choice as number }),
+          timeMs: Date.now() - st.roundStartedAt,
+          ...(timeout ? { timeout: true } : { choice }),
         },
       );
       useRankGameStore.getState().reveal(choice, judge);
     } catch (err) {
-      useRankGameStore.getState().setError(
-        err instanceof Error ? err.message : "提交失败，请重试",
-      );
+      useRankGameStore
+        .getState()
+        .setError(
+          err instanceof Error ? err.message : "提交失败，请重新连接。",
+        );
     }
   }, []);
-
-  // 判题后自动翻题
   useAutoNext({
-    active: s.phase === "REVEAL",
-    correct: s.lastJudge ? s.lastJudge.correct : null,
+    active: s.phase === "REVEAL" && panel === null,
+    correct: s.lastJudge?.correct ?? null,
     onNext: s.next,
+    correctDelay: 1600,
+    wrongDelay: 2800,
   });
 
-  // 剪影竞猜状态（D4 详设 §4.2）：本地记录当次点击结果，权威状态以 GET rank.guess 为准
-  const [guessResult, setGuessResult] = useState<{ correct: boolean; gained: number } | null>(null);
-  const [guessBusy, setGuessBusy] = useState(false);
-
-  // 问同窗（D4 详设 §4.1）：一局一次，移除 2 个错误选项（非 Hook 命名，避免 rules-of-hooks 误报）
-  const askHint = useCallback(async () => {
-    const st = useRankGameStore.getState();
-    if (st.phase !== "PLAYING" || !st.gameSessionId || st.hintUsed) return;
+  const askHint = async () => {
+    if (hintBusy || s.hintUsed || s.submitting || s.phase !== "PLAYING") return;
+    setHintBusy(true);
+    setNotice("");
+    const roundIndex = s.currentIndex;
+    const sessionId = s.gameSessionId;
     try {
-      const res = await secureFetch<{ removedIndexes: number[] }>(
+      const result = await secureFetch<{ removedIndexes: number[] }>(
         "/api/games/poetry/rank/hint",
         {
           playerId: usePlayerStore.getState().playerId ?? localPlayerId(),
-          gameSessionId: st.gameSessionId,
-          roundIndex: st.currentIndex,
+          gameSessionId: sessionId,
+          roundIndex,
         },
       );
-      useRankGameStore.getState().applyHint({
-        roundIndex: st.currentIndex,
-        removedIndexes: res.removedIndexes,
-      });
+      if (useRankGameStore.getState().gameSessionId === sessionId)
+        useRankGameStore
+          .getState()
+          .applyHint({ roundIndex, removedIndexes: result.removedIndexes });
     } catch {
-      /* 已用过 / 超时：忽略（按钮已置灰） */
+      setNotice("同窗暂未回应，请稍后再试。");
+    } finally {
+      setHintBusy(false);
     }
-  }, []);
-
-  // 剪影竞猜提交（猜 rankId+2 迷雾阶称号）
-  const submitGuess = useCallback(
-    async (label: string) => {
-      if (rank?.guess?.done || guessBusy) return;
-      const pid = usePlayerStore.getState().playerId ?? localPlayerId();
-      if (!pid) return;
-      setGuessBusy(true);
-      try {
-        const res = await secureFetch<{ correct: boolean; gained: number; todayUsed: boolean }>(
-          "/api/games/poetry/rank/guess",
-          { playerId: pid, guessLabel: label },
-        );
-        setGuessResult({ correct: res.correct, gained: res.gained });
-        void loadRank(); // 刷新 rank.guess 权威态
-      } catch {
-        /* 403 无迷雾阶 / 网络失败：忽略 */
-      } finally {
-        setGuessBusy(false);
-      }
-    },
-    [rank?.guess?.done, guessBusy, loadRank],
-  );
-
-
-  // 结算后刷新官阶视图（功名条回主页展示最新值）
-  useEffect(() => {
-    if (s.phase === "FINISHED" && s.lastSummary) {
-      setRank(s.lastSummary.rank);
-    }
-  }, [s.phase, s.lastSummary]);
-
-  const goHome = () => {
-    useRankGameStore.getState().reset();
-    void loadRank();
   };
-
-  const examReady = rank ? rank.nextUnlocked : false;
-  const isEmperorNow = rank ? rank.ranks[rank.rankId]?.isEmperor : false;
-  // 每日题今日状态（详设 §2.1 月历口径：done/made=已答，pending=未答）
+  const submitGuess = async (label: string) => {
+    if (guessBusy || rank?.guess?.done || guessResult) return;
+    setGuessBusy(true);
+    setNotice("");
+    try {
+      const result = await secureFetch<{ correct: boolean; gained: number }>(
+        "/api/games/poetry/rank/guess",
+        {
+          playerId: usePlayerStore.getState().playerId ?? localPlayerId(),
+          guessLabel: label,
+        },
+      );
+      setGuessResult(result);
+      await loadRank();
+    } catch {
+      setNotice("竞猜暂未提交，请稍后重试。");
+    } finally {
+      setGuessBusy(false);
+    }
+  };
+  const goHome = async () => {
+    useRankGameStore.getState().reset();
+    setPanel(null);
+    setNotice("");
+    setLoading(true);
+    try {
+      await loadRank();
+      setLoadError("");
+    } catch {
+      setLoadError("官途暂未载入，请重试。");
+    } finally {
+      setLoading(false);
+    }
+  };
+  const closePrologue = () => {
+    try {
+      localStorage.setItem(PROLOGUE_KEY, "1");
+    } catch {}
+    setPanel(null);
+  };
   const today = new Intl.DateTimeFormat("sv-SE", {
     timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
   }).format(new Date());
-  const todayCell = rank?.daily.cells.find((c) => c && c.date === today) ?? null;
-  const dailyDone = todayCell ? todayCell.state === "done" || todayCell.state === "made" : false;
+  const todayCell = rank?.daily.cells.find((c) => c?.date === today);
+  const dailyDone = todayCell?.state === "done" || todayCell?.state === "made";
+  const guessing =
+    rank && rank.guess && isGuessAvailable(rank.rankId)
+      ? buildGuessOptions(rank.rankId, (rank.rankId + 1) * 7919)
+      : null;
+  const round = s.rounds[s.currentIndex];
+  const active = s.phase === "PLAYING" || s.phase === "REVEAL";
 
   return (
-    <main className="mx-auto max-w-md px-4 py-8">
-      <div className="mb-6 flex items-center justify-between">
-        <Link href="/" className="text-sm text-zinc-500 hover:text-zinc-800">
-          ← 返回首页
-        </Link>
-        <div className="text-sm font-medium">🎓 诗词升官</div>
-        {s.phase === "IDLE" ? (
-          <Link
-            href="/play/poetry-rank/leaderboard"
-            className="text-sm font-medium text-amber-600 hover:text-amber-700"
-          >
-            📜 皇榜
+    <GameShell
+      title={active ? KIND_LABEL[s.kind] : BRAND.shortName}
+      back="/"
+      action={
+        s.phase === "IDLE" ? (
+          <Link className="quiet-button" href="/play/poetry-rank/leaderboard">
+            皇榜 〉
           </Link>
         ) : (
-          s.gameSessionId && (
-            <div className="text-sm">
-              <span className="text-zinc-400">{KIND_LABEL[s.kind]}</span> 得分{" "}
-              <span className="font-bold tabular-nums">{s.score}</span>
-            </div>
-          )
-        )}
-      </div>
-
-      {/* 官途主页 */}
-      {s.phase === "IDLE" && (
-        <section>
-          {loadingRank || !rank ? (
-            <div className="py-20 text-center">
-              <p className="animate-pulse text-zinc-500">正在查询官途…</p>
-            </div>
-          ) : (
-            <>
-              {/* 身份卡（D1：立绘 + 称号 + 功名估算 + 最近战绩） */}
-              <RankIdentityCard rank={rank} />
-
-              {/* 路线图迷雾（D1 重写） */}
-              <div className="mt-4">
-                <RankRoad rank={rank} />
-              </div>
-
-              {/* 剪影竞猜（D4 详设 §4.2）：猜 rankId+2 迷雾阶称号，每日 1 次 +100。
-                  rankId>=8（侍郎及以上）时入口整体隐藏（服务端 guess=null + 前端不渲染）。 */}
-              {rank.guess !== null && isGuessAvailable(rank.rankId) && (() => {
-                const seed = (rank.rankId + 1) * 7919;
-                const opts = buildGuessOptions(rank.rankId, seed);
-                const done = rank.guess.done;
-                const showResult = done || guessResult !== null;
-                const resCorrect = done ? rank.guess.correct : guessResult?.correct;
-                return (
-                  <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
-                    <p className="mb-1 text-sm font-bold text-amber-700">
-                      🔮 剪影竞猜：猜猜再下一阶（迷雾阶）的官衔？
-                    </p>
-                    <p className="mb-3 text-xs text-amber-600/80">
-                      每日 1 次
-                    </p>
-                    {opts && (
-                      <div className="grid grid-cols-2 gap-2">
-                        {opts.options.map((label, i) => {
-                          const isAnswer = showResult && label === opts.answerLabel;
-                          let cls = "border-amber-200 bg-white text-amber-700 active:scale-[0.98]";
-                          if (done) cls = "border-amber-200 bg-white text-amber-500";
-                          if (showResult && isAnswer) cls = "border-emerald-500 bg-emerald-50 font-bold text-emerald-700";
-                          return (
-                            <button
-                              key={i}
-                              type="button"
-                              disabled={done || guessBusy}
-                              onClick={() => void submitGuess(label)}
-                              className={`rounded-xl border px-3 py-2 text-sm font-bold transition ${cls}`}
-                            >
-                              {label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                    {showResult && (
-                      <p className="mt-3 text-sm font-bold">
-                        {resCorrect ? (
-                          <span className="text-emerald-600">✅ 猜中了！</span>
-                        ) : (
-                          <span className="text-zinc-500">未中（明日再试）</span>
-                        )}
-                      </p>
-                    )}
-                  </div>
-                );
-              })()}
-
-              {/* 限时事件横幅（P2 详设 §2.3：rank.event 命中时渲染；内侍播报 + 倒计时） */}
-              {rank.event && (
-                <EventBanner event={rank.event} />
-              )}
-
-              <div className="mt-6 grid gap-3">
-                <button
-                  onClick={() => void startGame("PRACTICE")}
-                  className="w-full rounded-2xl bg-indigo-500 py-4 text-lg font-bold text-white shadow active:scale-[0.99]"
-                >
-                  📖 研习（{rank.label}窗口 · 10 题 · 积功名）
-                </button>
-
-                {isEmperorNow ? (
-                  <button
-                    onClick={() => void startGame("EXAM")}
-                    className="w-full rounded-2xl bg-amber-500 py-4 text-lg font-bold text-white shadow active:scale-[0.99]"
-                  >
-                    👑 登极大考（15 题）
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => void startGame("EXAM")}
-                    disabled={!examReady}
-                    className={
-                      examReady
-                        ? "w-full rounded-2xl bg-amber-500 py-4 text-lg font-bold text-white shadow active:scale-[0.99]"
-                        : "w-full rounded-2xl border border-zinc-300 bg-zinc-100 py-4 text-zinc-400"
-                    }
-                  >
-                    📜 科考（晋升一阶 · 10 题）
-                    {!examReady && rank.expToNext > 0 && (
-                      <span className="mt-1 block text-xs">
-                        功名尚在积攒中
-                      </span>
-                    )}
-                  </button>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => void startGame("DAILY")}
-                  disabled={dailyDone}
-                  className={
-                    dailyDone
-                      ? "flex w-full items-center justify-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 py-3 text-sm font-bold text-emerald-600"
-                      : "flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-500 py-3 text-base font-bold text-white shadow active:scale-[0.99]"
-                  }
-                >
-                  <ArtAvatar
-                    src={EXTRA_NPC_AVATARS.STORYTELLER}
-                    containerClassName={`h-6 w-6 shrink-0 rounded-full border bg-white ${dailyDone ? "border-emerald-200" : "border-emerald-300"}`}
-                  />
-                  {dailyDone ? "每日题已完成" : "每日题（1 题 · 积功名 · 连满得周奖）"}
-                </button>
-
-                <Link
-                  href="/play/poetry-rank/ledger"
-                  className="w-full rounded-2xl border border-indigo-200 bg-white py-3 text-center text-sm font-bold text-indigo-600 active:scale-[0.99]"
-                >
-                  🏮 功名簿（成就 · 月历 · 总览）
-                </Link>
-
-                {/* 衣冠入口（P3-1）：拜相前整体隐藏——皮肤解锁条件涉及登极大考，
-                    与路线图皇帝节点同口径（详设 §4.3：拜相前任何入口不得露出皇帝信息） */}
-                {rank.rankId >= 9 && (
-                  <Link
-                    href="/play/poetry-rank/wardrobe"
-                    className="w-full rounded-2xl border border-amber-200 bg-white py-3 text-center text-sm font-bold text-amber-600 active:scale-[0.99]"
-                  >
-                    👘 衣冠（解锁 · 穿戴立绘）
-                  </Link>
-                )}
-
-                <Link
-                  href="/play/poetry-rank/gallery"
-                  className="w-full rounded-2xl border border-emerald-200 bg-white py-3 text-center text-sm font-bold text-emerald-600 active:scale-[0.99]"
-                >
-                  📚 诗词阁（收集答过的诗）
-                </Link>
-              </div>
-
-              <p className="mt-4 text-center text-xs text-zinc-400">
-                研习积功名 · 科考擢升 · 架空称号路线
-              </p>
-            </>
-          )}
-        </section>
-      )}
-
-      {/* 出题中 / 出错 */}
-      {(s.phase === "LOADING" || s.phase === "ERROR") && (
-        <section className="py-20 text-center">
-          {s.phase === "LOADING" ? (
-            <p className="animate-pulse text-zinc-500">
-              正在出题（{KIND_LABEL[s.kind]}）…
-            </p>
-          ) : (
-            <>
-              <p className="mb-2 text-red-500">{s.error}</p>
-              {s.error.includes("容量不足") || s.error.includes("题库为空") ? (
-                <p className="mb-4 text-xs text-zinc-400">
-                  本窗口题目已出完，进度已保留；等待语料扩容后可继续
-                </p>
-              ) : null}
-              <button
-                onClick={goHome}
-                className="rounded-xl border border-zinc-300 px-6 py-2"
-              >
-                返回官途
-              </button>
-            </>
-          )}
-        </section>
-      )}
-
-      {/* 对局 */}
-      {(s.phase === "PLAYING" || s.phase === "REVEAL") && s.rounds.length > 0 && (
-        <section>
-          <QuizHUD
-            index={s.currentIndex}
-            total={s.rounds.length}
-            combo={s.combo}
-            roundStartedAt={s.roundStartedAt}
-            durationMs={getRoundTimeMs(s.rounds[s.currentIndex]?.type)}
-            active={s.phase === "PLAYING" && !s.submitting}
-            theme="indigo"
-            onTimeout={() => void answer(null, true)}
-            eventBadge={s.event ? EVENT_BY_ID[s.event]?.name ?? null : null}
+          <span className="muted">
+            {s.phase === "FINISHED" ? "已收卷" : `得分 ${s.score}`}
+          </span>
+        )
+      }
+    >
+      {s.phase === "IDLE" &&
+        (loading || loadError || !rank ? (
+          <StatusView
+            loading="正在续写你的官途…"
+            error={loadError}
+            onRetry={() => void initialize()}
           />
-
-          <div key={s.currentIndex} className="animate-question-in">
-            {(() => {
-              const round = s.rounds[s.currentIndex];
-              const typeLabel =
-                round.type === "GUESS_POET"
-                  ? "这句诗的作者是？"
-                  : round.type === "GUESS_TITLE"
-                    ? "这句诗出自哪首作品？"
-                    : "请补出下一句";
-              // 首题展示开局白；后续题用简短过场句（人设对话气泡化，详设 §1.3）
-              const bubbleText =
-                s.currentIndex === 0 && s.opening
-                  ? s.opening
-                  : "下一题。";
-              return (
-                <PersonaBubble
-                  persona={s.persona ?? "TUTOR"}
-                  variant="question"
-                  text={bubbleText}
-                  typeLabel={`${KIND_LABEL[s.kind]} · 第 ${s.currentIndex + 1} 题 · ${typeLabel}`}
-                  prompt={round.prompt}
-                  combo={s.combo}
-                />
-              );
-            })()}
-
-            <div className="mt-4">
-              <DialogueChoices
-                options={s.rounds[s.currentIndex].options}
-                selected={s.selectedOption}
-                correctAnswer={s.lastJudge?.correctAnswer ?? null}
-                reveal={s.phase === "REVEAL"}
-                locked={s.submitting}
-                theme="indigo"
-                onChoose={(i) => void answer(i)}
-                removedIndexes={
-                  s.hint && s.hint.roundIndex === s.currentIndex
-                    ? s.hint.removedIndexes
-                    : undefined
-                }
-              />
-            </div>
-
-            {/* 问同窗（D4 详设 §4.1）：一局一次，移除 2 个错误选项（不泄答案） */}
-            {s.phase === "PLAYING" && (
+        ) : (
+          <div className="flex-fill rank-home">
+            <RankIdentityCard rank={rank} />
+            <RankRoad rank={rank} />
+            <EventLine event={rank.event} />
+            <nav className="aux-nav" aria-label="官途功能">
+              <Link href="/play/poetry-rank/ledger">▤ 功名簿</Link>
+              <Link href="/play/poetry-rank/gallery">▥ 诗词阁</Link>
+              <button onClick={() => setPanel("more")}>··· 更多</button>
+            </nav>
+            <div className="rank-actions">
               <button
-                type="button"
-                onClick={() => void askHint()}
-                disabled={s.hintUsed || s.submitting}
-                className={
-                  s.hintUsed
-                    ? "mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-zinc-50 py-2 text-sm text-zinc-400"
-                    : "mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-indigo-200 bg-white py-2 text-sm font-bold text-indigo-600 active:scale-[0.99]"
-                }
+                className="button primary"
+                onClick={() => void startGame("PRACTICE")}
               >
-                <ArtAvatar
-                  src={EXTRA_NPC_AVATARS.CLASSMATE}
-                  containerClassName="h-6 w-6 shrink-0 rounded-full border border-zinc-200 bg-white"
-                />
-                {s.hintUsed
-                  ? "已问过同窗"
-                  : "问同窗（移除 2 个错误选项）"}
+                研习诗词
+                <small>{rank.rankId === 10 ? "15" : "10"} 题 · 积功名</small>
               </button>
-            )}
-
-            {s.phase === "REVEAL" && s.lastJudge && s.persona && (
-              <div className="animate-reveal-in mt-4">
-                <PersonaBubble
-                  persona={s.persona}
-                  variant="feedback"
-                  text={s.lastJudge.feedback}
-                  correctAnswer={s.lastJudge.correctAnswer}
-                  gained={s.lastJudge.gained}
-                  isLast={s.currentIndex + 1 >= s.rounds.length}
-                  onNext={s.next}
-                />
-              </div>
+              <button
+                className="button gold"
+                disabled={!rank.nextUnlocked && rank.rankId !== 10}
+                onClick={() => void startGame("EXAM")}
+              >
+                {rank.rankId === 10 ? "登极大考" : "赴京科考"}
+                <small>
+                  {rank.rankId === 10
+                    ? "15 题 · 再试锋芒"
+                    : rank.nextUnlocked
+                      ? "功名已足 · 晋升一阶"
+                      : "再积功名 · 静候赴考"}
+                </small>
+              </button>
+              <button
+                className="button daily-button"
+                disabled={dailyDone}
+                onClick={() => void startGame("DAILY")}
+              >
+                {dailyDone ? "✓ 今日诗题已完成" : "每日一诗"}
+                <small>
+                  {dailyDone ? "明日再会" : "一题一得 · 连满得周奖"}
+                </small>
+              </button>
+            </div>
+            <p className="rank-footer">以诗为阶 · 架空成长，非真实官制</p>
+          </div>
+        ))}
+      {(s.phase === "LOADING" || s.phase === "ERROR") && (
+        <StatusView
+          loading="先生正在为你备卷…"
+          error={s.phase === "ERROR" ? s.error : ""}
+          onRetry={() => void initialize()}
+        >
+          {s.phase === "ERROR" && (
+            <button className="quiet-button" onClick={() => void goHome()}>
+              返回官途
+            </button>
+          )}
+        </StatusView>
+      )}
+      {active && round && (
+        <section className="quiz-screen">
+          <div className="quiz-hud">
+            <QuizHUD
+              index={s.currentIndex}
+              total={s.rounds.length}
+              combo={s.combo}
+              roundStartedAt={s.roundStartedAt}
+              durationMs={getRoundTimeMs(round.type)}
+              active={s.phase === "PLAYING" && !s.submitting}
+              theme="indigo"
+              onTimeout={() => void answer(null, true)}
+              eventBadge={s.event ? EVENT_BY_ID[s.event]?.name : null}
+            />
+          </div>
+          <div className="quiz-main">
+            <div className="question-card">
+              <p className="question-label">
+                {QUESTION_LABEL[round.type] ?? "请选择正确答案"}
+              </p>
+              <PagedText key={s.currentIndex} text={round.prompt} />
+            </div>
+            <div className="quiz-options">
+              {round.options.map((opt, i) => {
+                const reveal = s.phase === "REVEAL";
+                const correct = reveal && s.lastJudge?.correctAnswer === opt;
+                const removed =
+                  s.hint?.roundIndex === s.currentIndex &&
+                  s.hint.removedIndexes.includes(i);
+                return (
+                  <AdaptiveChoice
+                    key={`${s.currentIndex}-${i}`}
+                    index={i}
+                    text={opt}
+                    className={`quiz-choice ${correct ? "correct" : reveal && s.selectedOption === i ? "incorrect" : s.selectedOption === i ? "selected" : ""} ${removed && !reveal ? "removed" : ""}`}
+                    disabled={reveal || s.submitting || !!removed}
+                    onChoose={() => void answer(i)}
+                    onRead={() => {
+                      setReadingOption(i);
+                      setPanel("option");
+                    }}
+                    marker={
+                      correct
+                        ? "✓"
+                        : reveal && s.selectedOption === i
+                          ? "×"
+                          : String.fromCharCode(65 + i)
+                    }
+                  />
+                );
+              })}
+            </div>
+          </div>
+          <div className="quiz-bottom">
+            {s.phase === "PLAYING" ? (
+              <>
+                <button
+                  className="button secondary"
+                  disabled={s.hintUsed || s.submitting || hintBusy}
+                  onClick={() => void askHint()}
+                >
+                  {s.submitting
+                    ? "落笔判卷中…"
+                    : s.hintUsed
+                      ? "本局已问同窗"
+                      : hintBusy
+                        ? "正在请教…"
+                        : "问同窗 · 排除两项 / 功名八折"}
+                </button>
+              </>
+            ) : (
+              <>
+                <div
+                  className={`feedback-label ${s.lastJudge?.correct ? "" : "wrong"}`}
+                  role="status"
+                >
+                  <strong>
+                    {s.lastJudge?.correct
+                      ? `答对了 · +${s.lastJudge.gained} 功名`
+                      : s.lastJudge?.timeout
+                        ? "时辰已到 · 看看正解"
+                        : "差一点 · 正解已标出"}
+                  </strong>
+                  <button
+                    className="quiet-button"
+                    onClick={() => setPanel("feedback")}
+                  >
+                    读一读解析
+                  </button>
+                </div>
+                <button className="quiz-next" onClick={s.next}>
+                  {s.currentIndex + 1 === s.rounds.length
+                    ? "查看收获"
+                    : "下一题 →"}
+                </button>
+              </>
             )}
           </div>
+          {notice && (
+            <p className="error-line" role="status">
+              {notice}
+            </p>
+          )}
         </section>
       )}
-
-      {/* 结算 */}
       {s.phase === "FINISHED" && s.lastSummary && (
-        <section>
+        <>
           <RankSettleView
             summary={s.lastSummary}
-            onBack={goHome}
+            onBack={() => void goHome()}
             onRetry={
-              s.lastSummary.kind === "EXAM" && s.lastSummary.promotion.reason === "EXAM_FAILED"
+              s.lastSummary.kind === "EXAM" &&
+              s.lastSummary.promotion.reason === "EXAM_FAILED"
                 ? () => void startGame("EXAM")
                 : undefined
             }
           />
-          {/* 限时事件结算行（P2 详设 §2.3：功名入账行下追加赐功口径） */}
-          {s.lastSummary.event && (
-            <p className="mt-2 text-center text-xs font-bold text-amber-600">
-              🏮 {s.lastSummary.event.name}赐功 ×{s.lastSummary.event.expMultiplier}
-            </p>
-          )}
-          {/* 分享卡（P2 详设 §3：canvas 长图，纯客户端） */}
           <ShareCardView
             summary={s.lastSummary}
-            badgeLabels={(s.lastSummary.newBadges ?? [])
-              .map((k) => ACHIEVEMENT_BY_KEY.get(k))
-              .filter((a): a is NonNullable<typeof a> => !!a)
-              .map((a) => a.label)}
+            badgeLabels={s.lastSummary.newBadges
+              .map((k) => ACHIEVEMENT_BY_KEY.get(k)?.label)
+              .filter((x): x is string => !!x)}
           />
-        </section>
+        </>
       )}
-    </main>
+      {panel === "more" && rank && (
+        <Modal title="这一世的行囊" onClose={() => setPanel(null)}>
+          <PagedItems>
+            {guessing && (
+              <button
+                className="list-card"
+                onClick={() => {
+                  setNotice("");
+                  setPanel("guess");
+                }}
+              >
+                <span className="list-number">◇</span>
+                <div>
+                  <strong>猜官衔</strong>
+                  <small>
+                    {rank.guess?.done
+                      ? "今日已猜，明日再来"
+                      : "前路迷雾 · 每日一次"}
+                  </small>
+                </div>
+              </button>
+            )}
+            <button className="list-card" onClick={() => setPanel("record")}>
+              <span className="list-number">▤</span>
+              <div>
+                <strong>最近战绩</strong>
+                <small>回看每一步成长</small>
+              </div>
+            </button>
+            {rank.rankId >= 9 && (
+              <Link className="list-card" href="/play/poetry-rank/wardrobe">
+                <span className="list-number">衣</span>
+                <div>
+                  <strong>衣冠</strong>
+                  <small>换上一身新装</small>
+                </div>
+              </Link>
+            )}
+            <button className="list-card" onClick={() => setPanel("prologue")}>
+              <span className="list-number">序</span>
+              <div>
+                <strong>重读序章</strong>
+                <small>不忘这一世的起点</small>
+              </div>
+            </button>
+          </PagedItems>
+        </Modal>
+      )}
+      {panel === "record" && rank && (
+        <Modal title="最近战绩" onClose={() => setPanel(null)}>
+          <PagedItems>
+            <p className="paper-card">
+              已见 {rank.seenCount} 题 · 共积 {rank.totalExp} 功名
+            </p>
+            {rank.recentGames.length ? (
+              rank.recentGames.map((g, i) => (
+                <div key={i} className="list-card">
+                  <div>
+                    <strong>
+                      {KIND_LABEL[g.kind]} · 正确率 {g.accuracy}%
+                    </strong>
+                    <small>+{g.expGained} 功名</small>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p className="paper-card">还未落笔。第一卷，正等你开启。</p>
+            )}
+          </PagedItems>
+        </Modal>
+      )}
+      {panel === "guess" && rank && guessing && (
+        <Modal title="猜猜前路的官衔" onClose={() => setPanel(null)}>
+          <p className="muted">再下一阶的迷雾里，会是什么称号？</p>
+          <div className="guess-options">
+            {guessing.options.map((label) => (
+              <button
+                className="button secondary"
+                key={label}
+                disabled={rank.guess?.done || guessBusy || !!guessResult}
+                onClick={() => void submitGuess(label)}
+              >
+                {label}
+                {(rank.guess?.done || guessResult) &&
+                label === guessing.answerLabel
+                  ? " ✓"
+                  : ""}
+              </button>
+            ))}
+          </div>
+          <p role="status">
+            {rank.guess?.done || guessResult
+              ? (rank.guess?.correct ?? guessResult?.correct)
+                ? "猜中了！功名已入账。"
+                : "前路已揭晓，明日再试。"
+              : "每日一次，猜中可得 100 功名。"}
+          </p>
+          {notice && <p className="error-line">{notice}</p>}
+        </Modal>
+      )}
+      {panel === "prologue" && (
+        <Modal title="序章 · 重活一世" onClose={closePrologue}>
+          <div className="prologue">
+            <span className="rebirth-stamp">重 生</span>
+            <h2>
+              这一次
+              <br />
+              由我落笔
+            </h2>
+            <p>
+              再睁眼，又是一介布衣。
+              <br />
+              这一世，我要以诗词改写命运。
+            </p>
+            <button className="button gold" onClick={closePrologue}>
+              开启这一世
+            </button>
+          </div>
+        </Modal>
+      )}
+      {panel === "option" && round && (
+        <Modal
+          title={`选项 ${String.fromCharCode(65 + readingOption)} · 全文`}
+          onClose={() => setPanel(null)}
+        >
+          <p className="muted">
+            {s.phase === "PLAYING"
+              ? "阅读期间仍在计时，确认后再落笔。"
+              : "本题已判卷，返回即可查看正解。"}
+          </p>
+          <PagedText text={round.options[readingOption]} />
+          <button
+            className="button primary"
+            disabled={s.phase !== "PLAYING" || s.submitting}
+            onClick={() => {
+              setPanel(null);
+              void answer(readingOption);
+            }}
+          >
+            选择这一项
+          </button>
+        </Modal>
+      )}
+      {panel === "feedback" && s.lastJudge && (
+        <Modal title="先生解诗" onClose={() => setPanel(null)}>
+          <PagedText
+            text={`${s.lastJudge.feedback}\n\n正解：${s.lastJudge.correctAnswer}`}
+          />
+        </Modal>
+      )}
+    </GameShell>
   );
 }
